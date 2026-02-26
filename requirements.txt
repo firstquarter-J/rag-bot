@@ -1,2 +1,3 @@
 slack-bolt==1.26.0
 python-dotenv==1.1.1
+anthropic==0.74.1
