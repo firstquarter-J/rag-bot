@@ -24,6 +24,8 @@ ANTHROPIC_MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS", "700"))
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
 OLLAMA_TIMEOUT_SEC = int(os.getenv("OLLAMA_TIMEOUT_SEC", "90"))
+OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.0"))
+THREAD_CONTEXT_FETCH_LIMIT = int(os.getenv("THREAD_CONTEXT_FETCH_LIMIT", "100"))
 THREAD_CONTEXT_MAX_MESSAGES = int(os.getenv("THREAD_CONTEXT_MAX_MESSAGES", "12"))
 THREAD_CONTEXT_MAX_CHARS = int(os.getenv("THREAD_CONTEXT_MAX_CHARS", "5000"))
 MODEL_OWNER_USER_ID = "U0629HDSJHG"
@@ -33,7 +35,8 @@ COMMON_SYSTEM_PROMPT = (
     "너는 마미박스 CS 어시스턴트 Boxer다. "
     "항상 한국어로 답해라. "
     "근거가 부족하면 모른다고 답하고 추측하지 마라. "
-    "사실이 불확실한 값(버전, 스펙, 가격, 정책 등)은 단정하지 마라."
+    "사실이 불확실한 값(버전, 스펙, 가격, 정책 등)은 단정하지 마라. "
+    "스레드에서 나열한 항목을 물으면, 스레드 텍스트 기준으로 누락 없이 원문 순서대로 답해라."
 )
 
 
@@ -103,7 +106,7 @@ def _load_thread_context(
         response = slack_client.conversations_replies(
             channel=channel_id,
             ts=thread_ts,
-            limit=max(1, THREAD_CONTEXT_MAX_MESSAGES),
+            limit=max(1, min(200, THREAD_CONTEXT_FETCH_LIMIT)),
         )
     except Exception:
         logger.exception(
@@ -135,6 +138,7 @@ def _load_thread_context(
     if not lines:
         return ""
 
+    # keep recent messages, not oldest messages
     if len(lines) > THREAD_CONTEXT_MAX_MESSAGES:
         lines = lines[-THREAD_CONTEXT_MAX_MESSAGES:]
     return _trim_context_lines(lines, THREAD_CONTEXT_MAX_CHARS)
@@ -173,6 +177,9 @@ def _ask_ollama(question: str) -> str:
         "system": COMMON_SYSTEM_PROMPT,
         "prompt": question,
         "stream": False,
+        "options": {
+            "temperature": OLLAMA_TEMPERATURE,
+        },
     }
     req = request.Request(
         url=f"{OLLAMA_BASE_URL}/api/generate",
