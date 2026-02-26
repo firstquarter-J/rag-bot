@@ -8,6 +8,9 @@
 - Python은 **3.11+** 사용
 - 패키지 관리는 전역 설치보다 **`venv` 권장**
 - 로컬 토큰 관리는 **`.env`** 사용
+- 기본 LLM provider는 **`ollama`** (`boxer-llm`, `OLLAMA_BASE_URL` 사용)
+- 공통 시스템 정책 프롬프트(한국어/추측 금지)는 provider와 무관하게 동일 적용
+- 사용자 제한은 `claude` 호출에만 적용 (`ollama`는 제한 없음)
 - 운영 배포 시 토큰 관리는 **Secrets Manager**로 전환
 
 ## Phase 1 - Slack Bolt ping-pong
@@ -45,9 +48,14 @@ cp .env.example .env
 ```
 
 - [.env](/Users/firstquarter/workspace/rag-bot/.env) 파일에 아래 값 입력
-  - `SLACK_BOT_TOKEN=xoxb-...`
-  - `SLACK_APP_TOKEN=xapp-...`
-  - `SLACK_SIGNING_SECRET=...`
+  - `SLACK_BOT_TOKEN=<YOUR_VALUE>`
+  - `SLACK_APP_TOKEN=<YOUR_VALUE>`
+  - `SLACK_SIGNING_SECRET=<YOUR_VALUE>`
+  - `LLM_PROVIDER=<ollama|claude>`
+  - `OLLAMA_BASE_URL=<OLLAMA_BASE_URL>`
+  - `OLLAMA_MODEL=<OLLAMA_MODEL>`
+  - `OLLAMA_TIMEOUT_SEC=<SECONDS>`
+  - Claude 사용 시에만 `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ANTHROPIC_MAX_TOKENS` 설정
 
 4. 서버 실행
 
@@ -72,15 +80,25 @@ python app.py
 - `systemd` 서비스 `boxer.service` 등록/활성화
 - `journalctl -u boxer` 기준 Socket Mode 연결 로그 확인 (`Bolt app is running`)
 
+### LLM EC2 연동 현황 (2026-02-27 KST)
+
+- LLM 전용 인스턴스: `boxer-llm` (`m7i.large`, Amazon Linux 2023)
+- 네트워크: 같은 VPC 내부에서 Private IP로 통신
+- Ollama: `0.17.1`, 모델 `qwen2.5:1.5b` pull 및 로컬 실행 확인
+- Ollama 바인딩: `OLLAMA_HOST=0.0.0.0:11434` 적용
+- 보안그룹: `Boxer-LLM (sg-0ec551157bcc20e83)` 인바운드 `11434/TCP` 허용
+- 내부 통신 검증: Bolt 서버에서 `http://<LLM_PRIVATE_IP>:11434/api/generate` 호출 성공
+
 ## Phase 2 - LLM 우선 연동 (Provider 분리)
 
 RAG 데이터 소스를 붙이기 전에 LLM 응답 파이프라인을 먼저 완성한다.
 
-- [ ] `LLM_PROVIDER` 기반 라우팅 구현 (`ollama` / `openai` / `claude`)
+- [x] `LLM_PROVIDER` 기반 라우팅 구현 (`ollama` / `claude`)
+- [ ] `LLM_PROVIDER` 확장 (`openai`)
 - [ ] 공통 인터페이스 구현 (`generate_answer(prompt, context)`)
-- [ ] Slack 멘션 -> LLM 답변 스레드 응답 E2E
+- [x] Slack 멘션 -> LLM 답변 스레드 응답 E2E (`ollama` / `claude`)
 - [ ] 답변 가드레일 추가 (근거 부족 시 추정 금지/모르면 모른다고 답변)
-- [ ] provider별 설정을 `.env`로 분리
+- [x] provider별 설정을 `.env`로 분리
 
 ## Phase 3 - 단일 소스 RAG 파일럿
 
