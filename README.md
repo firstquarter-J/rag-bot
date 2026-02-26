@@ -14,11 +14,12 @@
 
 - [x] boxer-role IAM Role EC2에 연결
 - [x] GitHub 레포 생성 (firstquarter-J/rag-bot)
-- [ ] EC2에 Python 3.11+ 설치
-- [x] slack-bolt 패키지 설치 (로컬)
+- [x] EC2에 Python 3.11+ 설치
+- [x] slack-bolt 패키지 설치 (로컬/EC2)
 - [ ] Secrets Manager에 Slack 토큰 저장
-- [x] app.py 작성 (스레드 pong-local 응답)
+- [x] app.py 작성 (스레드 pong-ec2 응답)
 - [x] Slack에서 @Boxer ping -> pong-local 확인 (로컬)
+- [ ] Slack에서 @Boxer ping -> pong-ec2 확인 (EC2)
 
 ### Phase 1 빠른 실행 (.env)
 
@@ -50,7 +51,17 @@ python app.py
 
 5. Slack 테스트
 - 채널에서 `@Boxer ping` 입력
-- 봇이 스레드에 `pong-local` 응답하면 성공
+- 봇이 스레드에 `pong-ec2` 응답하면 성공
+
+### EC2 배포 현황 (2026-02-26 UTC)
+
+- EC2 접속 확인: `ec2-user@43.203.174.230`
+- 런타임 설치 완료: `git`, `python3.11`, `python3.11-pip`
+- 배포 경로: `/home/ec2-user/rag-bot`
+- `python3.11 -m venv .venv` 생성 및 `pip install -r requirements.txt` 완료
+- `.env` 업로드 및 권한 `600` 적용
+- `systemd` 서비스 `boxer.service` 등록/활성화
+- `journalctl -u boxer` 기준 Socket Mode 연결 로그 확인 (`Bolt app is running`)
 
 ## Phase 2 - S3 로그 읽기
 

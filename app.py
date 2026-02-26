@@ -43,8 +43,8 @@ def create_app() -> App:
         thread_ts = event.get("thread_ts") or event.get("ts")
         logger.info("Received app_mention: user=%s text=%s", event.get("user"), text)
         if "ping" in text:
-            say(text="pong-local", thread_ts=thread_ts)
-            logger.info("Responded with pong-local in thread_ts=%s", thread_ts)
+            say(text="pong-ec2", thread_ts=thread_ts)
+            logger.info("Responded with pong-ec2 in thread_ts=%s", thread_ts)
 
     @app.event("message")
     def handle_message_events(event: dict[str, Any]) -> None:
