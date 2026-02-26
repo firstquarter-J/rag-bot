@@ -55,6 +55,10 @@ cp .env.example .env
   - `OLLAMA_BASE_URL=<OLLAMA_BASE_URL>`
   - `OLLAMA_MODEL=<OLLAMA_MODEL>`
   - `OLLAMA_TIMEOUT_SEC=<SECONDS>`
+  - `OLLAMA_TEMPERATURE=<0.0~1.0>`
+  - `THREAD_CONTEXT_FETCH_LIMIT=<1~200>`
+  - `THREAD_CONTEXT_MAX_MESSAGES=<N>`
+  - `THREAD_CONTEXT_MAX_CHARS=<N>`
   - Claude 사용 시에만 `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ANTHROPIC_MAX_TOKENS` 설정
 
 4. 서버 실행
@@ -88,6 +92,16 @@ python app.py
 - Ollama 바인딩: `OLLAMA_HOST=0.0.0.0:11434` 적용
 - 보안그룹: `Boxer-LLM (sg-0ec551157bcc20e83)` 인바운드 `11434/TCP` 허용
 - 내부 통신 검증: Bolt 서버에서 `http://<LLM_PRIVATE_IP>:11434/api/generate` 호출 성공
+
+### 스레드 문맥 반영 (2026-02-27 KST)
+
+- 스레드 멘션 시 `conversations.replies`로 같은 스레드 메시지를 읽어 모델 입력에 포함
+- 기본 동작
+  - `THREAD_CONTEXT_FETCH_LIMIT=100`까지 조회
+  - 최근 `THREAD_CONTEXT_MAX_MESSAGES=12`개만 사용
+  - 총 `THREAD_CONTEXT_MAX_CHARS=5000`자 이내로 절단
+- Ollama는 `OLLAMA_TEMPERATURE=0.0` 기본값으로 설정해 답변 흔들림을 완화
+- 나열형 질문은 스레드 원문 기준 누락 없이 순서대로 답변하도록 공통 시스템 프롬프트 강화
 
 ## Phase 2 - LLM 우선 연동 (Provider 분리)
 
