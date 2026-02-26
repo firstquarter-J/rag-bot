@@ -7,18 +7,50 @@
 - Slack Bolt는 **Socket Mode**로 먼저 검증 (초기 HTTPS 인바운드 구성 불필요)
 - Python은 **3.11+** 사용
 - 패키지 관리는 전역 설치보다 **`venv` 권장**
-- 토큰 관리는 최종적으로 Secrets Manager를 사용하되, 초기 ping-pong 검증은 **임시 하드코딩**으로 빠르게 확인 가능
-- 하드코딩 사용 시 절대 커밋 금지, 검증 후 Secrets Manager 방식으로 전환
+- 로컬 토큰 관리는 **`.env`** 사용
+- 운영 배포 시 토큰 관리는 **Secrets Manager**로 전환
 
 ## Phase 1 - Slack Bolt ping-pong
 
 - [x] boxer-role IAM Role EC2에 연결
 - [x] GitHub 레포 생성 (firstquarter-J/rag-bot)
 - [ ] EC2에 Python 3.11+ 설치
-- [ ] slack-bolt 패키지 설치
+- [x] slack-bolt 패키지 설치 (로컬)
 - [ ] Secrets Manager에 Slack 토큰 저장
-- [ ] app.py 작성 (pong 응답)
-- [ ] Slack에서 @Boxer ping -> pong 확인
+- [x] app.py 작성 (스레드 pong-local 응답)
+- [x] Slack에서 @Boxer ping -> pong-local 확인 (로컬)
+
+### Phase 1 빠른 실행 (.env)
+
+1. Python 3.11+ 확인
+```bash
+python3.11 --version
+```
+
+2. 가상환경 및 패키지 설치
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+3. 토큰 설정
+```bash
+cp .env.example .env
+```
+- [.env](/Users/firstquarter/workspace/rag-bot/.env) 파일에 아래 값 입력
+  - `SLACK_BOT_TOKEN=xoxb-...`
+  - `SLACK_APP_TOKEN=xapp-...`
+  - `SLACK_SIGNING_SECRET=...`
+
+4. 서버 실행
+```bash
+python app.py
+```
+
+5. Slack 테스트
+- 채널에서 `@Boxer ping` 입력
+- 봇이 스레드에 `pong-local` 응답하면 성공
 
 ## Phase 2 - S3 로그 읽기
 
