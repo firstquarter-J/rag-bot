@@ -24,6 +24,8 @@ ANTHROPIC_MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS", "700"))
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
 OLLAMA_TIMEOUT_SEC = int(os.getenv("OLLAMA_TIMEOUT_SEC", "90"))
+THREAD_CONTEXT_MAX_MESSAGES = int(os.getenv("THREAD_CONTEXT_MAX_MESSAGES", "12"))
+THREAD_CONTEXT_MAX_CHARS = int(os.getenv("THREAD_CONTEXT_MAX_CHARS", "5000"))
 MODEL_OWNER_USER_ID = "U0629HDSJHG"
 DD_USER_ID = "U0A079J3L9M"
 MARK_USER_ID = "U02LBHACKEU"
@@ -64,6 +66,90 @@ def _validate_tokens() -> None:
 
 def _extract_question(text: str) -> str:
     return re.sub(r"<@[^>]+>", "", text).strip()
+
+
+def _safe_float(value: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def _trim_context_lines(lines: list[str], max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    kept: list[str] = []
+    total_chars = 0
+    for line in reversed(lines):
+        next_len = len(line) + (1 if kept else 0)
+        if total_chars + next_len > max_chars:
+            break
+        kept.append(line)
+        total_chars += next_len
+    kept.reverse()
+    return "\n".join(kept)
+
+
+def _load_thread_context(
+    slack_client: Any,
+    logger: logging.Logger,
+    channel_id: str,
+    thread_ts: str,
+    current_ts: str,
+) -> str:
+    if not channel_id or not thread_ts:
+        return ""
+    try:
+        response = slack_client.conversations_replies(
+            channel=channel_id,
+            ts=thread_ts,
+            limit=max(1, THREAD_CONTEXT_MAX_MESSAGES),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to load thread context: channel=%s thread_ts=%s",
+            channel_id,
+            thread_ts,
+        )
+        return ""
+
+    current_ts_num = _safe_float(current_ts)
+    lines: list[str] = []
+    for message in response.get("messages", []):
+        message_ts = str(message.get("ts", ""))
+        if message_ts == current_ts:
+            continue
+        if _safe_float(message_ts) > current_ts_num:
+            continue
+
+        text = (message.get("text") or "").strip()
+        if not text:
+            continue
+
+        if message.get("bot_id"):
+            speaker = "bot"
+        else:
+            speaker = message.get("user", "unknown")
+        lines.append(f"{speaker}: {text}")
+
+    if not lines:
+        return ""
+
+    if len(lines) > THREAD_CONTEXT_MAX_MESSAGES:
+        lines = lines[-THREAD_CONTEXT_MAX_MESSAGES:]
+    return _trim_context_lines(lines, THREAD_CONTEXT_MAX_CHARS)
+
+
+def _build_model_input(question: str, thread_context: str) -> str:
+    if not thread_context:
+        return question
+    return (
+        "아래는 현재 스레드의 최근 대화다. 문맥을 반영해서 답변해라.\n\n"
+        "[스레드 최근 대화]\n"
+        f"{thread_context}\n\n"
+        "[현재 질문]\n"
+        f"{question}"
+    )
 
 
 def _ask_claude(client: Anthropic, question: str) -> str:
@@ -118,10 +204,12 @@ def create_app() -> App:
     claude_client = Anthropic(api_key=ANTHROPIC_API_KEY) if LLM_PROVIDER == "claude" else None
 
     @app.event("app_mention")
-    def handle_app_mention(event: dict[str, Any], say) -> None:
+    def handle_app_mention(event: dict[str, Any], say, client) -> None:
         raw_text = event.get("text") or ""
         text = raw_text.lower()
         user_id = event.get("user")
+        channel_id = event.get("channel") or ""
+        current_ts = event.get("ts") or ""
         thread_ts = event.get("thread_ts") or event.get("ts")
         logger.info("Received app_mention: user=%s text=%s", user_id, text)
 
@@ -153,7 +241,15 @@ def create_app() -> App:
                 logger.info("Rejected claude call for user=%s", user_id)
                 return
             try:
-                answer = _ask_claude(claude_client, question)
+                thread_context = _load_thread_context(
+                    client,
+                    logger,
+                    channel_id,
+                    thread_ts,
+                    current_ts,
+                )
+                model_input = _build_model_input(question, thread_context)
+                answer = _ask_claude(claude_client, model_input)
                 if not answer:
                     answer = "답변을 생성하지 못했어. 다시 질문해줘"
                 say(text=answer, thread_ts=thread_ts)
@@ -172,7 +268,15 @@ def create_app() -> App:
                 say(text="질문 내용을 같이 보내줘", thread_ts=thread_ts)
                 return
             try:
-                answer = _ask_ollama(question)
+                thread_context = _load_thread_context(
+                    client,
+                    logger,
+                    channel_id,
+                    thread_ts,
+                    current_ts,
+                )
+                model_input = _build_model_input(question, thread_context)
+                answer = _ask_ollama(model_input)
                 if not answer:
                     answer = "답변을 생성하지 못했어. 다시 질문해줘"
                 say(text=answer, thread_ts=thread_ts)
