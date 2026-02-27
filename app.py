@@ -3,8 +3,9 @@ import logging
 import os
 import re
 from typing import Any
-from urllib import error, request
+from urllib import error, parse, request
 
+import pymysql
 from anthropic import Anthropic
 from dotenv import load_dotenv
 from slack_bolt import App
@@ -29,6 +30,27 @@ THREAD_CONTEXT_FETCH_LIMIT = int(os.getenv("THREAD_CONTEXT_FETCH_LIMIT", "100"))
 THREAD_CONTEXT_MAX_MESSAGES = int(os.getenv("THREAD_CONTEXT_MAX_MESSAGES", "12"))
 THREAD_CONTEXT_MAX_CHARS = int(os.getenv("THREAD_CONTEXT_MAX_CHARS", "5000"))
 MODEL_OWNER_USER_ID = "U0629HDSJHG"
+DB_QUERY_ENABLED = os.getenv("DB_QUERY_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+BOX_DB_HOST = os.getenv("BOX_DB_HOST", "")
+BOX_DB_PORT = int(os.getenv("BOX_DB_PORT", "3306"))
+BOX_DB_USERNAME = os.getenv("BOX_DB_USERNAME", "")
+BOX_DB_PASSWORD = os.getenv("BOX_DB_PASSWORD", "")
+BOX_DB_DATABASE = os.getenv("BOX_DB_DATABASE", "")
+APP_USER_API_URL = os.getenv(
+    "APP_USER_API_URL",
+    "https://bh63r1dl09.execute-api.ap-northeast-2.amazonaws.com/prod/app-user",
+)
+APP_USER_API_TIMEOUT_SEC = int(os.getenv("APP_USER_API_TIMEOUT_SEC", "8"))
+DB_QUERY_TIMEOUT_SEC = int(os.getenv("DB_QUERY_TIMEOUT_SEC", "8"))
+DB_QUERY_MAX_ROWS = int(os.getenv("DB_QUERY_MAX_ROWS", "20"))
+DB_QUERY_MAX_SQL_CHARS = int(os.getenv("DB_QUERY_MAX_SQL_CHARS", "600"))
+DB_QUERY_MAX_RESULT_CHARS = int(os.getenv("DB_QUERY_MAX_RESULT_CHARS", "2500"))
+DEFAULT_DB_QUERY = "SELECT NOW() AS now_time, DATABASE() AS db_name"
+BARCODE_PATTERN = re.compile(r"(?<!\d)(\d{11})(?!\d)")
+DB_WRITE_SQL_PATTERN = re.compile(
+    r"\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|replace)\b",
+    re.IGNORECASE,
+)
 COMMON_SYSTEM_PROMPT = (
     "You are Boxer, the internal assistant for Box and Humanscape. "
     "Language policy: reply in Korean by default; if the user asks in English, reply in English. "
@@ -62,6 +84,17 @@ def _validate_tokens() -> None:
             missing.append("OLLAMA_BASE_URL")
         if not OLLAMA_MODEL or "REPLACE_ME" in OLLAMA_MODEL:
             missing.append("OLLAMA_MODEL")
+    if DB_QUERY_ENABLED:
+        if not BOX_DB_HOST or "REPLACE_ME" in BOX_DB_HOST:
+            missing.append("BOX_DB_HOST")
+        if BOX_DB_PORT <= 0:
+            missing.append("BOX_DB_PORT")
+        if not BOX_DB_USERNAME or "REPLACE_ME" in BOX_DB_USERNAME:
+            missing.append("BOX_DB_USERNAME")
+        if not BOX_DB_PASSWORD or "REPLACE_ME" in BOX_DB_PASSWORD:
+            missing.append("BOX_DB_PASSWORD")
+        if not BOX_DB_DATABASE or "REPLACE_ME" in BOX_DB_DATABASE:
+            missing.append("BOX_DB_DATABASE")
 
     if missing:
         raise RuntimeError(
@@ -73,6 +106,34 @@ def _validate_tokens() -> None:
 
 def _extract_question(text: str) -> str:
     return re.sub(r"<@[^>]+>", "", text).strip()
+
+
+def _extract_barcode(text: str) -> str | None:
+    match = BARCODE_PATTERN.search(text)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _should_lookup_barcode(question: str, barcode: str) -> bool:
+    normalized = (question or "").strip()
+    if normalized == barcode:
+        return True
+    if normalized.startswith(barcode):
+        suffix = normalized[len(barcode) :].strip()
+        if suffix in {"", "조회", "조회해줘", "확인", "확인해줘"}:
+            return True
+    lowered = normalized.lower()
+    return "바코드" in normalized or "barcode" in lowered
+
+
+def _display_value(value: Any, default: str = "없음") -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text:
+        return default
+    return text
 
 
 def _safe_float(value: str) -> float:
@@ -169,6 +230,128 @@ def _format_reply_text(user_id: str | None, text: str) -> str:
     return f"<@{user_id}> {clean_text}"
 
 
+def _extract_db_query(question: str) -> str | None:
+    normalized = question.strip()
+    lowered = normalized.lower()
+    if lowered.startswith("db 조회"):
+        return normalized[5:].strip()
+    if lowered.startswith("db조회"):
+        return normalized[4:].strip()
+    return None
+
+
+def _validate_readonly_sql(raw_sql: str) -> str:
+    sql = (raw_sql or "").strip()
+    if not sql:
+        return DEFAULT_DB_QUERY
+
+    if len(sql) > max(1, DB_QUERY_MAX_SQL_CHARS):
+        raise ValueError(f"SQL 길이는 최대 {DB_QUERY_MAX_SQL_CHARS}자까지 허용해")
+
+    if sql.endswith(";"):
+        sql = sql[:-1].strip()
+    if ";" in sql:
+        raise ValueError("한 번에 한 쿼리만 실행할 수 있어")
+
+    lowered = sql.lower()
+    if not lowered.startswith(("select", "show", "describe", "desc", "explain", "with")):
+        raise ValueError("읽기 전용 쿼리(SELECT/SHOW/DESCRIBE/EXPLAIN/WITH)만 허용해")
+    if DB_WRITE_SQL_PATTERN.search(sql):
+        raise ValueError("쓰기/변경 쿼리는 허용하지 않아")
+
+    return sql
+
+
+def _query_db(sql: str) -> str:
+    rows_limit = max(1, min(200, DB_QUERY_MAX_ROWS))
+    timeout_sec = max(1, DB_QUERY_TIMEOUT_SEC)
+    connection = pymysql.connect(
+        host=BOX_DB_HOST,
+        port=BOX_DB_PORT,
+        user=BOX_DB_USERNAME,
+        password=BOX_DB_PASSWORD,
+        database=BOX_DB_DATABASE,
+        connect_timeout=timeout_sec,
+        read_timeout=timeout_sec,
+        write_timeout=timeout_sec,
+        charset="utf8mb4",
+        autocommit=True,
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(sql)
+            rows = cursor.fetchmany(rows_limit)
+            rowcount = cursor.rowcount
+    finally:
+        connection.close()
+
+    if not rows:
+        return "DB 조회 결과가 없어"
+
+    payload = json.dumps(rows, ensure_ascii=False, default=str)
+    if len(payload) > DB_QUERY_MAX_RESULT_CHARS:
+        payload = payload[:DB_QUERY_MAX_RESULT_CHARS] + "...(truncated)"
+
+    if isinstance(rowcount, int) and rowcount > len(rows):
+        summary = f"DB 조회 결과 {rowcount}건 중 {len(rows)}건만 보여줄게"
+    else:
+        summary = f"DB 조회 결과 {len(rows)}건"
+    return f"{summary}\n```json\n{payload}\n```"
+
+
+def _lookup_app_user_by_barcode(barcode: str) -> str:
+    if not APP_USER_API_URL:
+        raise RuntimeError("APP_USER_API_URL is empty")
+
+    timeout_sec = max(1, APP_USER_API_TIMEOUT_SEC)
+    query = parse.urlencode({"barcode": barcode})
+    delimiter = "&" if "?" in APP_USER_API_URL else "?"
+    endpoint = f"{APP_USER_API_URL}{delimiter}{query}"
+    req = request.Request(url=endpoint, method="GET")
+    try:
+        with request.urlopen(req, timeout=timeout_sec) as response:
+            body = response.read().decode("utf-8")
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"app-user API HTTP {exc.code}: {detail[:200]}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"app-user API connection failed: {exc.reason}") from exc
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("app-user API returned invalid JSON") from exc
+
+    users = payload.get("data")
+    if not isinstance(users, list) or not users:
+        return f"바코드 {barcode}로 조회된 유저가 없어"
+
+    lines = [f"바코드 {barcode} 조회 결과 {len(users)}건"]
+    for user_index, user in enumerate(users, start=1):
+        user_name = _display_value(user.get("userRealName"))
+        user_phone = _display_value(user.get("userPhoneNumber"))
+        user_seq = _display_value(user.get("userSeq"))
+        lines.append(
+            f"[유저 {user_index}] 산모 이름: {user_name}, 전화번호: {user_phone}, userSeq: {user_seq}"
+        )
+
+        babies = user.get("babies")
+        if not isinstance(babies, list) or not babies:
+            lines.append("아이 정보: 없음")
+            continue
+
+        for baby_index, baby in enumerate(babies, start=1):
+            baby_seq = _display_value(baby.get("babySeq"))
+            baby_nickname = _display_value(baby.get("babyNickname"))
+            lines.append(
+                f"아이 {baby_index}: babySeq={baby_seq}, babyNickname={baby_nickname}"
+            )
+
+    return "\n".join(lines)
+
+
 def _ask_claude(client: Anthropic, question: str) -> str:
     result = client.messages.create(
         model=ANTHROPIC_MODEL,
@@ -227,6 +410,7 @@ def create_app() -> App:
     def handle_app_mention(event: dict[str, Any], say, client) -> None:
         raw_text = event.get("text") or ""
         text = raw_text.lower()
+        question = _extract_question(raw_text)
         user_id = event.get("user")
         channel_id = event.get("channel") or ""
         current_ts = event.get("ts") or ""
@@ -238,8 +422,71 @@ def create_app() -> App:
             logger.info("Responded with pong-ec2 in thread_ts=%s", thread_ts)
             return
 
+        barcode = _extract_barcode(question)
+        if barcode and _should_lookup_barcode(question, barcode):
+            try:
+                lookup_result = _lookup_app_user_by_barcode(barcode)
+                say(text=_format_reply_text(user_id, lookup_result), thread_ts=thread_ts)
+                logger.info(
+                    "Responded with barcode lookup in thread_ts=%s barcode=%s",
+                    thread_ts,
+                    barcode,
+                )
+            except Exception:
+                logger.exception("Barcode lookup failed")
+                say(
+                    text=_format_reply_text(
+                        user_id,
+                        "바코드 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘",
+                    ),
+                    thread_ts=thread_ts,
+                )
+            return
+
+        db_query = _extract_db_query(question)
+        if db_query is not None:
+            if user_id != MODEL_OWNER_USER_ID:
+                say(
+                    text=_format_reply_text(
+                        user_id,
+                        "DB 조회는 현재 지정된 사용자만 사용할 수 있어",
+                    ),
+                    thread_ts=thread_ts,
+                )
+                logger.info("Rejected db query for user=%s", user_id)
+                return
+            if not DB_QUERY_ENABLED:
+                say(
+                    text=_format_reply_text(
+                        user_id,
+                        "DB 조회 기능이 꺼져 있어. .env에서 DB_QUERY_ENABLED=true로 설정해줘",
+                    ),
+                    thread_ts=thread_ts,
+                )
+                return
+
+            try:
+                safe_sql = _validate_readonly_sql(db_query)
+                db_result = _query_db(safe_sql)
+                say(text=_format_reply_text(user_id, db_result), thread_ts=thread_ts)
+                logger.info("Responded with db query result in thread_ts=%s", thread_ts)
+            except ValueError as exc:
+                say(
+                    text=_format_reply_text(user_id, f"DB 조회 요청 형식 오류: {exc}"),
+                    thread_ts=thread_ts,
+                )
+            except pymysql.MySQLError:
+                logger.exception("DB query failed")
+                say(
+                    text=_format_reply_text(
+                        user_id,
+                        "DB 조회 중 오류가 발생했어. 연결 정보와 네트워크 상태를 확인해줘",
+                    ),
+                    thread_ts=thread_ts,
+                )
+            return
+
         if LLM_PROVIDER == "claude" and claude_client:
-            question = _extract_question(raw_text)
             if not question:
                 say(
                     text=_format_reply_text(user_id, "질문 내용을 같이 보내줘"),
@@ -282,7 +529,6 @@ def create_app() -> App:
             return
 
         if LLM_PROVIDER == "ollama":
-            question = _extract_question(raw_text)
             if not question:
                 say(
                     text=_format_reply_text(user_id, "질문 내용을 같이 보내줘"),
