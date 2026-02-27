@@ -30,6 +30,9 @@ THREAD_CONTEXT_FETCH_LIMIT = int(os.getenv("THREAD_CONTEXT_FETCH_LIMIT", "100"))
 THREAD_CONTEXT_MAX_MESSAGES = int(os.getenv("THREAD_CONTEXT_MAX_MESSAGES", "12"))
 THREAD_CONTEXT_MAX_CHARS = int(os.getenv("THREAD_CONTEXT_MAX_CHARS", "5000"))
 MODEL_OWNER_USER_ID = "U0629HDSJHG"
+MARK_USER_ID = "U02LBHACKEU"
+DD_USER_ID = "U0A079J3L9M"
+APP_USER_LOOKUP_ALLOWED_USER_IDS = {MODEL_OWNER_USER_ID, MARK_USER_ID}
 DB_QUERY_ENABLED = os.getenv("DB_QUERY_ENABLED", "").lower() in {"1", "true", "yes", "on"}
 BOX_DB_HOST = os.getenv("BOX_DB_HOST", "")
 BOX_DB_PORT = int(os.getenv("BOX_DB_PORT", "3306"))
@@ -422,39 +425,46 @@ def create_app() -> App:
             logger.info("Responded with pong-ec2 in thread_ts=%s", thread_ts)
             return
 
+        db_query = _extract_db_query(question)
         barcode = _extract_barcode(question)
         if barcode and _should_lookup_barcode(question, barcode):
-            try:
-                lookup_result = _lookup_app_user_by_barcode(barcode)
-                say(text=_format_reply_text(user_id, lookup_result), thread_ts=thread_ts)
+            if user_id in APP_USER_LOOKUP_ALLOWED_USER_IDS:
+                try:
+                    lookup_result = _lookup_app_user_by_barcode(barcode)
+                    say(text=_format_reply_text(user_id, lookup_result), thread_ts=thread_ts)
+                    logger.info(
+                        "Responded with barcode lookup in thread_ts=%s barcode=%s",
+                        thread_ts,
+                        barcode,
+                    )
+                except Exception:
+                    logger.exception("Barcode lookup failed")
+                    say(
+                        text=_format_reply_text(
+                            user_id,
+                            "바코드 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘",
+                        ),
+                        thread_ts=thread_ts,
+                    )
+                return
+            if db_query is None:
+                say(
+                    text=f"보안 책임자 <@{DD_USER_ID}> 의 승인이 필요합니다.",
+                    thread_ts=thread_ts,
+                )
                 logger.info(
-                    "Responded with barcode lookup in thread_ts=%s barcode=%s",
-                    thread_ts,
+                    "Rejected app-user barcode lookup for unauthorized user=%s barcode=%s",
+                    user_id,
                     barcode,
                 )
-            except Exception:
-                logger.exception("Barcode lookup failed")
-                say(
-                    text=_format_reply_text(
-                        user_id,
-                        "바코드 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘",
-                    ),
-                    thread_ts=thread_ts,
-                )
-            return
-
-        db_query = _extract_db_query(question)
-        if db_query is not None:
-            if user_id != MODEL_OWNER_USER_ID:
-                say(
-                    text=_format_reply_text(
-                        user_id,
-                        "DB 조회는 현재 지정된 사용자만 사용할 수 있어",
-                    ),
-                    thread_ts=thread_ts,
-                )
-                logger.info("Rejected db query for user=%s", user_id)
                 return
+            logger.info(
+                "Skipped app-user barcode lookup for unauthorized user=%s barcode=%s",
+                user_id,
+                barcode,
+            )
+
+        if db_query is not None:
             if not DB_QUERY_ENABLED:
                 say(
                     text=_format_reply_text(
