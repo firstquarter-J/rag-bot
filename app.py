@@ -162,6 +162,15 @@ def _build_model_input(question: str, thread_context: str) -> str:
     )
 
 
+def _format_reply_text(user_id: str | None, text: str) -> str:
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return clean_text
+    if not user_id:
+        return clean_text
+    return f"<@{user_id}> {clean_text}"
+
+
 def _ask_claude(client: Anthropic, question: str) -> str:
     result = client.messages.create(
         model=ANTHROPIC_MODEL,
@@ -232,23 +241,29 @@ def create_app() -> App:
         }
         special_text = special_responses.get(user_id)
         if special_text:
-            say(text=special_text, thread_ts=thread_ts)
+            say(text=_format_reply_text(user_id, special_text), thread_ts=thread_ts)
             logger.info("Responded with special rule in thread_ts=%s", thread_ts)
             return
 
         if "ping" in text:
-            say(text="pong-ec2", thread_ts=thread_ts)
+            say(text=_format_reply_text(user_id, "pong-ec2"), thread_ts=thread_ts)
             logger.info("Responded with pong-ec2 in thread_ts=%s", thread_ts)
             return
 
         if LLM_PROVIDER == "claude" and claude_client:
             question = _extract_question(raw_text)
             if not question:
-                say(text="질문 내용을 같이 보내줘", thread_ts=thread_ts)
+                say(
+                    text=_format_reply_text(user_id, "질문 내용을 같이 보내줘"),
+                    thread_ts=thread_ts,
+                )
                 return
             if user_id != MODEL_OWNER_USER_ID:
                 say(
-                    text="Claude 질문은 현재 지정된 사용자만 사용할 수 있어",
+                    text=_format_reply_text(
+                        user_id,
+                        "Claude 질문은 현재 지정된 사용자만 사용할 수 있어",
+                    ),
                     thread_ts=thread_ts,
                 )
                 logger.info("Rejected claude call for user=%s", user_id)
@@ -265,12 +280,15 @@ def create_app() -> App:
                 answer = _ask_claude(claude_client, model_input)
                 if not answer:
                     answer = "답변을 생성하지 못했어. 다시 질문해줘"
-                say(text=answer, thread_ts=thread_ts)
+                say(text=_format_reply_text(user_id, answer), thread_ts=thread_ts)
                 logger.info("Responded with claude answer in thread_ts=%s", thread_ts)
             except Exception:
                 logger.exception("Claude API call failed")
                 say(
-                    text="AI 응답 중 오류가 발생했어. 잠시 후 다시 시도해줘",
+                    text=_format_reply_text(
+                        user_id,
+                        "AI 응답 중 오류가 발생했어. 잠시 후 다시 시도해줘",
+                    ),
                     thread_ts=thread_ts,
                 )
             return
@@ -278,7 +296,10 @@ def create_app() -> App:
         if LLM_PROVIDER == "ollama":
             question = _extract_question(raw_text)
             if not question:
-                say(text="질문 내용을 같이 보내줘", thread_ts=thread_ts)
+                say(
+                    text=_format_reply_text(user_id, "질문 내용을 같이 보내줘"),
+                    thread_ts=thread_ts,
+                )
                 return
             try:
                 thread_context = _load_thread_context(
@@ -292,18 +313,21 @@ def create_app() -> App:
                 answer = _ask_ollama(model_input)
                 if not answer:
                     answer = "답변을 생성하지 못했어. 다시 질문해줘"
-                say(text=answer, thread_ts=thread_ts)
+                say(text=_format_reply_text(user_id, answer), thread_ts=thread_ts)
                 logger.info("Responded with ollama answer in thread_ts=%s", thread_ts)
             except Exception:
                 logger.exception("Ollama API call failed")
                 say(
-                    text="Ollama 응답 중 오류가 발생했어. 서버 연결 상태를 확인해줘",
+                    text=_format_reply_text(
+                        user_id,
+                        "Ollama 응답 중 오류가 발생했어. 서버 연결 상태를 확인해줘",
+                    ),
                     thread_ts=thread_ts,
                 )
             return
 
         say(
-            text="현재는 ping 또는 LLM 질문에 응답해",
+            text=_format_reply_text(user_id, "현재는 ping 또는 LLM 질문에 응답해"),
             thread_ts=thread_ts,
         )
 
