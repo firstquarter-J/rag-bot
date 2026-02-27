@@ -29,8 +29,6 @@ THREAD_CONTEXT_FETCH_LIMIT = int(os.getenv("THREAD_CONTEXT_FETCH_LIMIT", "100"))
 THREAD_CONTEXT_MAX_MESSAGES = int(os.getenv("THREAD_CONTEXT_MAX_MESSAGES", "12"))
 THREAD_CONTEXT_MAX_CHARS = int(os.getenv("THREAD_CONTEXT_MAX_CHARS", "5000"))
 MODEL_OWNER_USER_ID = "U0629HDSJHG"
-DD_USER_ID = "U0A079J3L9M"
-MARK_USER_ID = "U02LBHACKEU"
 COMMON_SYSTEM_PROMPT = (
     "You are Boxer, the internal assistant for Box and Humanscape. "
     "Language policy: reply in Korean by default; if the user asks in English, reply in English. "
@@ -234,16 +232,6 @@ def create_app() -> App:
         current_ts = event.get("ts") or ""
         thread_ts = event.get("thread_ts") or event.get("ts")
         logger.info("Received app_mention: user=%s text=%s", user_id, text)
-
-        special_responses = {
-            DD_USER_ID: "간식 통제",
-            MARK_USER_ID: "득남 축하",
-        }
-        special_text = special_responses.get(user_id)
-        if special_text:
-            say(text=_format_reply_text(user_id, special_text), thread_ts=thread_ts)
-            logger.info("Responded with special rule in thread_ts=%s", thread_ts)
-            return
 
         if "ping" in text:
             say(text=_format_reply_text(user_id, "pong-ec2"), thread_ts=thread_ts)
