@@ -21,7 +21,7 @@
 - [x] slack-bolt 패키지 설치 (로컬/EC2)
 - [ ] Secrets Manager에 Slack 토큰 저장
 - [x] app.py 작성 (스레드 pong-ec2 응답)
-- [x] 특정 사용자 규칙 응답 (DD/Mark)
+- [x] 멘션 사용자 태그 응답
 - [x] Slack에서 @Boxer ping -> pong-local 확인 (로컬)
 - [x] Slack에서 @Boxer ping -> pong-ec2 확인 (EC2)
 
@@ -71,8 +71,7 @@ python app.py
 
 - 채널에서 `@Boxer ping` 입력
 - 봇이 스레드에 `pong-ec2` 응답하면 성공
-- DD(`U0A079J3L9M`)가 멘션하면 스레드에 `간식 통제` 응답
-- Mark(`U02LBHACKEU`)가 멘션하면 스레드에 `득남 축하` 응답
+- 멘션한 사용자 태그(`<@user_id>`)를 포함해 스레드 응답하면 성공
 
 ### EC2 배포 현황 (2026-02-26 UTC)
 
