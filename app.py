@@ -331,26 +331,37 @@ def _lookup_app_user_by_barcode(barcode: str) -> str:
     if not isinstance(users, list) or not users:
         return f"바코드 {barcode}로 조회된 유저가 없어"
 
-    lines = [f"바코드 {barcode} 조회 결과 {len(users)}건"]
+    lines = [
+        f"*바코드 조회 결과* :barcode: `{barcode}`",
+        f"• 조회 건수: *{len(users)}건*",
+    ]
     for user_index, user in enumerate(users, start=1):
-        user_name = _display_value(user.get("userRealName"))
-        user_phone = _display_value(user.get("userPhoneNumber"))
-        user_seq = _display_value(user.get("userSeq"))
-        lines.append(
-            f"[유저 {user_index}] 산모 이름: {user_name}, 전화번호: {user_phone}, userSeq: {user_seq}"
-        )
+        user_phone = _display_value(user.get("userPhoneNumber"), default="null")
+        user_seq = _display_value(user.get("userSeq"), default="null")
+        user_real_name = _display_value(user.get("userRealName"), default="null")
+        lines.append("")
+        lines.append(f"*user {user_index}*")
+        lines.append(f"• `userPhoneNumber`: `{user_phone}`")
+        lines.append(f"• `userSeq`: `{user_seq}`")
+        lines.append(f"• `userRealName`: `{user_real_name}`")
 
         babies = user.get("babies")
         if not isinstance(babies, list) or not babies:
-            lines.append("아이 정보: 없음")
+            lines.append("• `babies`: `[]`")
             continue
 
         for baby_index, baby in enumerate(babies, start=1):
-            baby_seq = _display_value(baby.get("babySeq"))
-            baby_nickname = _display_value(baby.get("babyNickname"))
-            lines.append(
-                f"아이 {baby_index}: babySeq={baby_seq}, babyNickname={baby_nickname}"
-            )
+            baby_seq = _display_value(baby.get("babySeq"), default="null")
+            twin_key = _display_value(baby.get("twinKey"), default="null")
+            twin_flag = _display_value(baby.get("twinFlag"), default="null")
+            birth_date = _display_value(baby.get("birthDate"), default="null")
+            baby_nickname = _display_value(baby.get("babyNickname"), default="null")
+            lines.append(f"• `babies[{baby_index - 1}]`")
+            lines.append(f"  - `babySeq`: `{baby_seq}`")
+            lines.append(f"  - `twinKey`: `{twin_key}`")
+            lines.append(f"  - `twinFlag`: `{twin_flag}`")
+            lines.append(f"  - `birthDate`: `{birth_date}`")
+            lines.append(f"  - `babyNickname`: `{baby_nickname}`")
 
     return "\n".join(lines)
 
