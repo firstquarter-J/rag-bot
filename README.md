@@ -1,42 +1,105 @@
-# Boxer - 사내 CS RAG 챗봇
+# LLM RAG Chatbot
 
-마미박스 CS 팀 질문에 S3 로그 + Notion + RDS를 RAG 방식으로 조회하고, Ollama LLM이 자동 답변하는 Slack 챗봇.
+범용 질의응답 제품을 만들기 위한 LLM + Retrieval 기반 Chatbot 엔진입니다.
+사용자 질문을 받아 승인된 데이터 소스(DB/API/S3/Notion)를 조회하고, 근거 기반으로 답변합니다.
 
-## 현재 구현 원칙 (Phase 1)
+## 프로젝트 포지셔닝
 
-- Slack Bolt는 **Socket Mode**로 먼저 검증 (초기 HTTPS 인바운드 구성 불필요)
-- Python은 **3.11+** 사용
-- 패키지 관리는 전역 설치보다 **`venv` 권장**
-- 로컬 토큰 관리는 **`.env`** 사용
-- 기본 LLM provider는 **`ollama`** (`boxer-llm`, `OLLAMA_BASE_URL` 사용)
-- 공통 시스템 정책 프롬프트는 provider와 무관하게 동일 적용 (영어 규칙문 + 언어/톤 정책)
-- 사용자 제한은 `claude` 호출에만 적용 (`ollama`는 제한 없음)
-- DB 조회는 `.env`의 `BOX_DB_*` 값으로 연결하고 읽기 전용 쿼리만 허용
-- 바코드 개인정보 조회(app-user API)는 `U0629HDSJHG`(owner), `U02LBHACKEU`(Mark)만 허용
-- 자연어 자동 해석은 튜닝이 아니라 `의도/슬롯 추출 + 템플릿 조회` 방식으로 구현
-- 운영 배포 시 토큰 관리는 **Secrets Manager**로 전환
+- 저장소 제목: `LLM RAG Chatbot`
+- 이유: 직관적이고, 특정 팀/도메인에 종속되지 않으며, 오픈소스로 확장하기 쉽습니다
 
-## Phase 1 - Slack Bolt ping-pong
+## 프로젝트 목표
 
-- [x] boxer-role IAM Role EC2에 연결
-- [x] GitHub 레포 생성 (firstquarter-J/rag-bot)
-- [x] EC2에 Python 3.11+ 설치
-- [x] slack-bolt 패키지 설치 (로컬/EC2)
-- [ ] Secrets Manager에 Slack 토큰 저장
-- [x] app.py 작성 (스레드 pong-ec2 응답)
-- [x] 멘션 사용자 태그 응답
-- [x] Slack에서 @Boxer ping -> pong-local 확인 (로컬)
-- [x] Slack에서 @Boxer ping -> pong-ec2 확인 (EC2)
+- 팀/도메인에 관계없이 재사용 가능한 오픈소스 아키텍처
+- 정책 가드 + 감사 메타데이터 기반의 신뢰 가능한 답변 파이프라인
+- 빠른 조회, 추적 가능한 근거, 낮은 환각 위험을 기본값으로 제공
 
-### Phase 1 빠른 실행 (.env)
+## 제품 확장 방향
 
-1. Python 3.11+ 확인
+- Slack은 현재 레퍼런스 채널이며, Web/CLI/사내툴로 채널 확장 가능
+- DB/API/S3/Notion 커넥터를 모듈로 분리해 제품형 확장 가능
+- 권한 정책(RBAC), 개인정보 마스킹, 감사 로그를 제품 기본 기능으로 내장
+- 멀티 워크스페이스/멀티 테넌트 구조로 확장 가능
+- 즉, 단일 봇이 아니라 오픈클로 같은 범용 제품으로 발전 가능한 구조
 
-```bash
-python3.11 --version
+## 현재 동작 (이 저장소에서 구현됨)
+
+- Slack 어댑터가 Socket Mode로 동작 (레퍼런스 구현)
+- `@Bot ping` 멘션에 스레드로 응답
+- Slack 스레드 맥락을 읽어 LLM 프롬프트에 주입
+- LLM 제공자 라우팅 지원 (`ollama`, `claude`)
+- app-user API를 통한 바코드 사용자 프로필 조회 지원
+- 바코드 프로필 조회 권한을 owner와 Mark로 제한
+- 미인가 사용자의 바코드 프로필 요청에는 다음 문구로 응답:
+  - `보안 책임자 @DD 의 승인이 필요합니다.`
+- DB 조회 명령은 명시적 커맨드 형태만 지원:
+  - `db 조회 ...` 또는 `db조회 ...`
+- DB 쿼리 실행은 읽기 전용으로 제한 (SELECT/SHOW/DESCRIBE/EXPLAIN/WITH)
+
+## 아직 구현되지 않음 (중요)
+
+- 자연어 DB 의도 라우팅(예: `43032748143 영상 몇 개야?`)이 아직 완전 자동화되지 않음
+- 멀티 소스 조회 오케스트레이션(S3 + Notion + DB) 미완성
+- 근거 메타데이터 영구 저장 경로(table/index) 미확정
+
+## 핵심 아키텍처 (플랫폼 독립)
+
+핵심 원칙: `LLM은 판단`, `서버는 정책 검증과 실제 실행`을 담당합니다.
+
+1. Input Normalizer
+- 멘션 텍스트, 스레드 맥락, 사용자 식별자, 타임스탬프 정규화
+
+2. Intent/Slot Router (rule + LLM)
+- 의도 분류 및 필요한 슬롯 추출
+- 예시: `video_count_by_barcode`, `video_dates_by_barcode`
+
+3. Policy Guard (server authority)
+- 실행 여부를 최종 결정
+- 권한, PII 정책, 허용 템플릿(allowlist) 검증
+
+4. Tool Executor
+- 승인된 도구/템플릿만 실행
+- 가드레일이 적용된 DB/API/S3/Notion 조회
+
+5. Evidence Merger
+- 수집된 근거를 정규화하고 중복 제거
+
+6. Answer Synthesizer
+- 근거 기반 최종 답변 생성
+- 근거가 부족하면 보강 질문 1개 또는 근거 부족 안내
+
+7. Audit Logger
+- 실행 추적 정보와 근거 메타데이터 저장
+
+## 정책 가드 라우팅을 쓰는 이유 (일반 GPT 답변 대비)
+
+일반 GPT 대화:
+- 도구 실행 보장 없이 그럴듯한 텍스트를 생성할 수 있음
+- 실제 데이터를 조회했는지 증명하기 어려움
+
+정책 가드 라우팅:
+- `LLM 판단 -> 정책 검증 -> 실제 조회 -> 근거 기반 응답`
+- 환각 및 허위 조회 주장 감소
+- 권한/개인정보(PII) 정책 강제
+- 장애 대응 및 감사 추적이 쉬워짐
+
+## 근거 메타데이터 (권장)
+
+응답 단위로 아래 메타데이터를 남겨 추적성을 확보합니다:
+
+```json
+{
+  "source": "db",
+  "intent": "video_count_by_barcode",
+  "query_key": "barcode=43032748143",
+  "executed_at": "2026-02-27T18:52:10+09:00",
+  "row_count": 110
+}
 ```
 
-2. 가상환경 및 패키지 설치
+## 빠른 시작 (Slack 레퍼런스 앱)
+
+1. 가상환경 생성 및 의존성 설치
 
 ```bash
 python3.11 -m venv .venv
@@ -44,197 +107,207 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. 토큰 설정
+2. 환경 변수 설정
 
 ```bash
 cp .env.example .env
 ```
 
-- [.env](/Users/firstquarter/workspace/rag-bot/.env) 파일에 아래 값 입력
-  - `SLACK_BOT_TOKEN=<YOUR_VALUE>`
-  - `SLACK_APP_TOKEN=<YOUR_VALUE>`
-  - `SLACK_SIGNING_SECRET=<YOUR_VALUE>`
-  - `LLM_PROVIDER=<ollama|claude>`
-  - `OLLAMA_BASE_URL=<OLLAMA_BASE_URL>`
-  - `OLLAMA_MODEL=<OLLAMA_MODEL>`
-  - `OLLAMA_TIMEOUT_SEC=<SECONDS>`
-  - `OLLAMA_TEMPERATURE=<0.0~1.0>`
-  - `THREAD_CONTEXT_FETCH_LIMIT=<1~200>`
-  - `THREAD_CONTEXT_MAX_MESSAGES=<N>`
-  - `THREAD_CONTEXT_MAX_CHARS=<N>`
-  - Claude 사용 시에만 `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ANTHROPIC_MAX_TOKENS` 설정
-  - 바코드 조회 API: `APP_USER_API_URL`, `APP_USER_API_TIMEOUT_SEC`
-  - DB 조회 사용 시 `DB_QUERY_ENABLED=true`, `BOX_DB_HOST`, `BOX_DB_PORT`, `BOX_DB_USERNAME`, `BOX_DB_PASSWORD`, `BOX_DB_DATABASE` 설정
-  - DB 조회 제어값: `DB_QUERY_TIMEOUT_SEC`, `DB_QUERY_MAX_ROWS`, `DB_QUERY_MAX_SQL_CHARS`, `DB_QUERY_MAX_RESULT_CHARS`
+필수 기본 변수:
 
-4. 서버 실행
+- `SLACK_BOT_TOKEN`
+- `SLACK_APP_TOKEN`
+- `SLACK_SIGNING_SECRET`
+- `LLM_PROVIDER` (`ollama` 또는 `claude`)
+
+LLM 변수:
+
+- Ollama: `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT_SEC`, `OLLAMA_TEMPERATURE`
+- Claude: `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ANTHROPIC_MAX_TOKENS`
+
+바코드 프로필 API 변수:
+
+- `APP_USER_API_URL`
+- `APP_USER_API_TIMEOUT_SEC`
+
+DB 조회 변수:
+
+- `DB_QUERY_ENABLED=true`
+- `BOX_DB_HOST`, `BOX_DB_PORT`, `BOX_DB_USERNAME`, `BOX_DB_PASSWORD`, `BOX_DB_DATABASE`
+- `DB_QUERY_TIMEOUT_SEC`, `DB_QUERY_MAX_ROWS`, `DB_QUERY_MAX_SQL_CHARS`, `DB_QUERY_MAX_RESULT_CHARS`
+
+3. 실행
 
 ```bash
 python app.py
 ```
 
-5. Slack 테스트
+## Slack 사용 예시
 
-- 채널에서 `@Boxer ping` 입력
-- 봇이 스레드에 `pong-ec2` 응답하면 성공
-- 멘션한 사용자 태그(`<@user_id>`)를 포함해 스레드 응답하면 성공
-- owner/Mark가 11자리 바코드 입력 시 app-user API 조회 결과(산모/아이 정보) 응답하면 성공
-- 그 외 사용자는 같은 바코드 질문 시 app-user 개인정보 조회를 수행하지 않고 `보안 책임자 @DD 의 승인이 필요합니다.` 응답
-- DB 조회 테스트: `@Boxer db 조회` (기본 쿼리) 또는 `@Boxer db 조회 SELECT NOW() AS now_time`
+- Ping
+  - `@Boxer ping`
 
-### EC2 배포 현황 (2026-02-26 UTC)
+- 바코드 프로필 조회 (권한 사용자만)
+  - `@Boxer 43032748143`
+  - `@Boxer 바코드 43032748143 조회해줘`
 
-- EC2 접속 확인: `ec2-user@43.203.174.230`
-- 런타임 설치 완료: `git`, `python3.11`, `python3.11-pip`
-- 배포 경로: `/home/ec2-user/rag-bot`
-- `python3.11 -m venv .venv` 생성 및 `pip install -r requirements.txt` 완료
-- `.env` 업로드 및 권한 `600` 적용
-- `systemd` 서비스 `boxer.service` 등록/활성화
-- `journalctl -u boxer` 기준 Socket Mode 연결 로그 확인 (`Bolt app is running`)
+- DB 명시적 조회 모드
+  - `@Boxer db 조회`
+  - `@Boxer db 조회 SELECT NOW() AS now_time`
 
-### LLM EC2 연동 현황 (2026-02-27 KST)
+## 운영 로그
 
-- LLM 전용 인스턴스: `boxer-llm` (`m7i.large`, Amazon Linux 2023)
-- 네트워크: 같은 VPC 내부에서 Private IP로 통신
-- Ollama: `0.17.1`, 모델 `qwen2.5:1.5b` pull 및 로컬 실행 확인
-- Ollama 바인딩: `OLLAMA_HOST=0.0.0.0:11434` 적용
-- 보안그룹: `Boxer-LLM (sg-0ec551157bcc20e83)` 인바운드 `11434/TCP` 허용
-- 내부 통신 검증: Bolt 서버에서 `http://<LLM_PRIVATE_IP>:11434/api/generate` 호출 성공
+실시간 로그 확인:
 
-### 스레드 문맥 반영 (2026-02-27 KST)
-
-- 스레드 멘션 시 `conversations.replies`로 같은 스레드 메시지를 읽어 모델 입력에 포함
-- 기본 동작
-  - `THREAD_CONTEXT_FETCH_LIMIT=100`까지 조회
-  - 최근 `THREAD_CONTEXT_MAX_MESSAGES=12`개만 사용
-  - 총 `THREAD_CONTEXT_MAX_CHARS=5000`자 이내로 절단
-- Ollama는 `OLLAMA_TEMPERATURE=0.0` 기본값으로 설정해 답변 흔들림을 완화
-- 나열형 질문은 스레드 원문 기준 누락 없이 순서대로 답변하도록 공통 시스템 프롬프트 강화
-
-### 조사 모드 구현 계획 (2026-02-27 KST)
-
-- 트리거 문구: 스레드에서 `@Boxer 스레드 맥락 분석`
-- 트리거 감지 시 일반 Q&A 모드가 아닌 조사 모드로 라우팅
-- 조사 모드 기본 흐름
-  - 스레드 전체 문맥 요약 + 핵심 키 추출 (`고객`, `시간대`, `session_id`, `request_id`, `에러코드`)
-  - 키 누락 시 질문 1회로 보강
-  - 바코드가 있으면 사용자 식별 API를 먼저 조회해 컨텍스트 보강
-  - 필요 소스 판단 후 retrieval 실행 (`Notion`, `S3`, `RDS`)
-  - 근거 병합/중복 제거 후 LLM이 결론 작성
-- 조사 모드 응답 형식
-  - `결론`
-  - `확인한 근거` (출처 링크/로그 경로/조회 시각)
-  - `다음 조치`
-  - `추가 확인 필요 항목` (있을 때만)
-
-### 자연어 자동 해석 방식 (튜닝 아님)
-
-- 목표: LLM이 SQL을 직접 생성하지 않고, 자연어를 구조화된 조회 요청으로 변환
-- 처리 순서
-  - `intent 분류`: 예) `video_shoot_dates_by_barcode`
-  - `slot 추출`: 예) `barcode`, `date_from`, `date_to`, `limit`
-  - `slot 검증`: 누락/포맷 오류 시 보강 질문 1회
-  - `조회 실행`: 의도별 allowlist SQL/API 템플릿에 파라미터 바인딩
-  - `응답 생성`: 조회 결과를 요약하고 근거를 함께 제시
-- 원칙
-  - 모델 파인튜닝 없이 프롬프트 + 라우팅/검증 코드로 구현
-  - DB는 읽기 전용 쿼리만 허용
-  - PII(이름/전화번호)는 기본 마스킹 후 필요한 경우에만 노출
-
-### 바코드 유저 조회 API (Lambda)
-
-- 엔드포인트: `GET https://bh63r1dl09.execute-api.ap-northeast-2.amazonaws.com/prod/app-user?barcode=<BARCODE>`
-- 제공 값: `산모 이름`, `산모 전화번호`, `userSeq`, `babySeq`, `babyNickname`
-- 활용 방식
-  - 조사 모드에서 바코드가 감지되면 1차로 호출
-  - 조회된 `userSeq/babySeq`를 DB/로그/문서 조회 키로 재사용
-  - 최종 응답에는 필요한 범위만 노출하고 민감정보는 마스킹
-  - 권한 정책: owner/Mark만 호출 허용, 그 외 사용자는 호출하지 않음
-
-### 공통 프롬프트 정책 (2026-02-27 KST)
-
-- 시스템 프롬프트는 혼합형으로 운영: 규칙/제약은 영어 문장으로 명시
-- 언어 정책: 기본 한국어, 영어 질문에는 영어 답변
-- 톤 정책: 반말 고정, 존댓말(요/습니다체) 금지
-- 답변 정책: 핵심 우선, 간결 답변(기본 3~6문장), 근거 부족 시 추측 금지
-
-## Phase 2 - LLM 우선 연동 (Provider 분리)
-
-RAG 데이터 소스를 붙이기 전에 LLM 응답 파이프라인을 먼저 완성한다.
-
-- [x] `LLM_PROVIDER` 기반 라우팅 구현 (`ollama` / `claude`)
-- [ ] `LLM_PROVIDER` 확장 (`openai`)
-- [ ] 공통 인터페이스 구현 (`generate_answer(prompt, context)`)
-- [x] Slack 멘션 -> LLM 답변 스레드 응답 E2E (`ollama` / `claude`)
-- [ ] 답변 가드레일 추가 (근거 부족 시 추정 금지/모르면 모른다고 답변)
-- [x] provider별 설정을 `.env`로 분리
-
-## Phase 3 - 단일 소스 RAG + 조사 모드 기본기
-
-먼저 한 소스만 붙여 retrieval 품질과 프롬프트 구조를 검증한다.
-
-- [ ] 조사 모드 트리거 인식 (`스레드 맥락 분석`)
-- [ ] intent/slot JSON 스키마 정의 (`video_shoot_dates_by_barcode` 포함)
-- [ ] 스레드 키 정보 추출기 구현 (`시간대`, `세션/요청 ID`, `에러 키워드`)
-- [ ] 키 누락 시 보강 질문 1회 정책 적용
-- [ ] 바코드 감지 시 app-user API 선조회 라우팅
-- [ ] 우선 소스 선택 (Notion 또는 S3)
-- [ ] 문서 수집/정규화
-- [ ] retrieval 결과를 LLM context에 주입
-- [ ] 근거 포함 답변 형식 검증
-
-## Phase 4 - 멀티 소스 확장 (S3 + Notion + RDS)
-
-- [ ] 조사 모드에서 소스별 병렬 조회 실행기 구현
-- [ ] Lambda app-user API 연동 (실패/timeout/retry 정책 포함)
-- [ ] S3 로그 fetch + 날짜/키워드/ID 필터링
-- [ ] Notion 페이지 검색 + 본문 추출
-- [ ] RDS 조회 연결 (보안그룹/계정 포함)
-- [ ] 소스별 우선순위/충돌 규칙 정의
-- [ ] 통합 retrieval 결과를 단일 context로 구성
-- [ ] 출처/조회시각을 포함한 근거 블록 표준화
-- [ ] PII 마스킹 정책 적용 (전화번호/이름)
-
-## Phase 5 - 모델 운영 전략 고도화
-
-- [ ] 모델 실행 위치 결정
-- [ ] Ollama 전용 EC2 운영안 확정 (권장)
-- [ ] 대안 provider 연동 테스트 (온프레미스/Claude/OpenAI API)
-- [ ] 비용/지연/품질 기준으로 provider 선택 정책 수립
-- [ ] 성능 튜닝 (인스턴스 타입, 캐시, 동시성)
-
-## Phase 6 - box-admin-client 채팅 UI 연동
-
-Slack 외에 box-admin-client 웹 앱에 채팅 UI를 추가한다. 핵심 RAG 엔진을 공통 서비스로 분리하고 Slack과 웹 인터페이스가 각각 붙는 구조를 목표로 한다.
-
-- [ ] RAG 엔진 코어 모듈화 (Slack Bolt와 분리)
-- [ ] FastAPI REST/WebSocket 엔드포인트 구현
-- [ ] box-admin-client 인증 방식 확인
-- [ ] 네트워크 구성 확인 (같은 VPC 여부)
-- [ ] box-admin-client 채팅 컴포넌트 구현
-- [ ] LLM 스트리밍 응답 연동 (SSE or WebSocket)
-
-## 아키텍처
-
-```text
-Slack            <-> Slack Bolt Layer \
-                                      RAG Orchestrator (Retrieval + Prompt + Policy)
-box-admin-client <-> FastAPI / WS API /
-                                      LLM Gateway (Provider Adapter)
-                                      |- Ollama on Dedicated EC2 (권장)
-                                      |- On-prem Model Server
-                                      |- Claude/OpenAI API
+```bash
+sudo journalctl -u boxer -f -o short-iso
 ```
 
-## 모델 배포 전략
+특정 시간대 로그 확인:
 
-권장: 모델은 별도 서버(전용 EC2 또는 온프레미스)로 분리하고, 봇 서버는 provider adapter만 둔다.
+```bash
+sudo journalctl -u boxer \
+  --since "2026-02-27 09:45:00" \
+  --until "2026-02-27 09:53:00" \
+  --no-pager \
+| grep -E "Received app_mention|Responded with|db query|barcode lookup"
+```
 
-이유:
+## 보안 노트
 
-- 모델 추론 부하를 봇 처리와 분리해 장애 전파를 줄일 수 있음
-- 모델 교체(Ollama <-> 외부 API <-> 온프레미스)가 코드 변경 없이 가능
-- 비용과 성능을 provider별로 유연하게 운영 가능
-- 보안/네트워크 정책을 모델 서버 단위로 분리 가능
+- 비밀값은 `.env`로 관리하고 커밋하지 않기
+- DB 조회 모드에는 읽기 전용 계정 사용
+- PII 엔드포인트는 엄격한 권한 정책으로 보호
+- 정책이 요구할 때 기본 응답에서 민감 정보 마스킹
 
-초기 PoC는 같은 EC2에서 시작해도 되지만, 운영 전환 시 분리를 권장한다.
+## 로드맵
+
+### Phase A - 안정 베이스라인
+
+- [x] Slack 멘션 처리 및 스레드 응답
+- [x] 제공자 라우팅 (`ollama` / `claude`)
+- [x] 스레드 맥락 주입
+- [x] 권한 게이트가 있는 바코드 프로필 조회
+- [x] 명시적 읽기 전용 DB 조회 모드
+
+### Phase B - 자연어 조회 라우팅
+
+- [ ] 의도/슬롯 스키마 정의
+- [ ] 의도별 정책 가드 규칙 세트
+- [ ] 자연어 질문을 안전한 템플릿 조회로 자동 라우팅
+- [ ] 슬롯 누락 시 보강 질문 fallback
+
+### Phase C - 멀티 소스 조회
+
+- [ ] 날짜/키워드/id 기반 S3 로그 조회
+- [ ] Notion 페이지 검색 및 본문 추출
+- [ ] DB/API/S3/Notion 통합 근거 병합
+- [ ] 근거 메타데이터 저장 및 조회
+
+### Phase D - 인터페이스와 확장
+
+- [ ] 코어 엔진 모듈화
+- [ ] FastAPI/WS 엔드포인트
+- [ ] 웹 채팅 연동
+- [ ] 성능 및 동시성 튜닝
+
+## 상위 다이어그램
+
+```text
+Slack/Web -> Input Normalizer -> Intent/Slot Router -> Policy Guard -> Tool Executor
+                                                         |              |- DB
+                                                         |              |- API
+                                                         |              |- S3
+                                                         |              |- Notion
+                                                         v
+                              Evidence Merger -> Answer Synthesizer -> Response
+                                                         \
+                                                          -> Audit Logger
+```
+
+## 구현 페이즈 기록 (History + Progress)
+
+최종 업데이트: `2026-02-28`
+
+### 큰 목차
+
+1. Phase A - 안정 베이스라인
+2. Phase B - 자연어 조회 라우팅
+3. Phase C - 멀티 소스 조회
+4. Phase D - 인터페이스와 확장
+
+### 진행 상태 요약
+
+| Phase | 상태 | 비고 |
+| --- | --- | --- |
+| A | 완료 | Slack 레퍼런스 동작 + 권한 게이트 + 명시적 DB 조회 |
+| B | 진행중 | 자연어 질의 자동 라우팅 설계 정리, 실행 로직은 미완 |
+| C | 예정 | S3/Notion/DB 증거 병합 파이프라인 구현 예정 |
+| D | 예정 | 채널 확장(Web/WS/API) 및 성능/동시성 고도화 예정 |
+
+### 상세 기록
+
+#### Phase A - 안정 베이스라인
+
+완료:
+- Slack 멘션 처리 및 스레드 응답
+- `ollama`/`claude` 제공자 라우팅
+- 스레드 맥락 주입
+- 바코드 프로필 조회 + 권한 게이트(owner/Mark)
+- 미인가 요청 시 `보안 책임자 @DD 의 승인이 필요합니다.` 응답
+- 명시적 읽기 전용 DB 조회 모드
+
+진행중:
+- 없음
+
+다음:
+- 운영 관점 로그 키/메타데이터 표준화
+
+#### Phase B - 자연어 조회 라우팅
+
+완료:
+- 정책 가드 기반 구조/흐름 문서화
+- 의도/슬롯 기반 라우팅 방향 확정
+
+진행중:
+- 자연어 입력에서 안전한 템플릿 조회로 연결하는 라우터 구현
+- 슬롯 누락 시 보강 질문 fallback 규칙 구현
+
+다음:
+- 의도 스키마 확정 (`video_count_by_barcode`, `video_dates_by_barcode` 우선)
+- 의도별 허용 쿼리/툴 allowlist 연결
+
+#### Phase C - 멀티 소스 조회
+
+완료:
+- 없음
+
+진행중:
+- 없음
+
+다음:
+- S3 로그 조회기 구현 (날짜/키워드/id 필터)
+- Notion 검색/본문 추출 구현
+- DB/API/S3/Notion 통합 근거 병합기 구현
+- 근거 메타데이터 저장 경로 확정 및 적용
+
+#### Phase D - 인터페이스와 확장
+
+완료:
+- 없음
+
+진행중:
+- 없음
+
+다음:
+- 코어 엔진 모듈화
+- FastAPI/WS 엔드포인트
+- 웹 채널 연동
+- 성능/동시성 튜닝
+
+### 기록 규칙
+
+- 완료 항목만 `완료`에 기록
+- 계획은 `다음`에 기록
+- 변경 시 `최종 업데이트` 날짜를 함께 갱신
+- 가능하면 PR/커밋 링크를 함께 남겨 추적성 확보
