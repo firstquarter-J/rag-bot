@@ -19,6 +19,24 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip(
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
 OLLAMA_TIMEOUT_SEC = int(os.getenv("OLLAMA_TIMEOUT_SEC", "90"))
 OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.0"))
+LLM_SYNTHESIS_ENABLED = os.getenv("LLM_SYNTHESIS_ENABLED", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+LLM_SYNTHESIS_MAX_EVIDENCE_CHARS = int(os.getenv("LLM_SYNTHESIS_MAX_EVIDENCE_CHARS", "7000"))
+LLM_SYNTHESIS_MASKING_ENABLED = os.getenv("LLM_SYNTHESIS_MASKING_ENABLED", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+RETRIEVAL_SYNTHESIS_SYSTEM_PROMPT = os.getenv(
+    "RETRIEVAL_SYNTHESIS_SYSTEM_PROMPT",
+    "You are a retrieval-grounded assistant. Answer briefly in Korean using only provided evidence. "
+    "If evidence is insufficient, clearly say what is missing.",
+)
 
 THREAD_CONTEXT_FETCH_LIMIT = int(os.getenv("THREAD_CONTEXT_FETCH_LIMIT", "100"))
 THREAD_CONTEXT_MAX_MESSAGES = int(os.getenv("THREAD_CONTEXT_MAX_MESSAGES", "12"))

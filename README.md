@@ -74,6 +74,7 @@
 - `@Bot ping` 멘션에 스레드로 응답
 - Slack 스레드 맥락을 읽어 LLM 프롬프트에 주입
 - LLM 제공자 라우팅 지원 (`ollama`, `claude`)
+- 조회형 응답은 서버가 근거를 수집한 뒤, LLM이 근거(JSON) 기반으로 최종 문장화
 - app-user API를 통한 바코드 사용자 프로필 조회 지원
 - 바코드 프로필 조회 권한을 owner와 Mark로 제한
 - 미인가 사용자의 바코드 프로필 요청에는 다음 문구로 응답:
@@ -97,7 +98,7 @@
 - 바코드 + 전체 녹화 날짜 자연어 요청 지원:
   - 바코드를 `recordings.fullBarcode`로 조회해 `recordedAt`의 KST 날짜 목록 응답
 - 바코드 + 특정 날짜 녹화 여부 자연어 요청 지원:
-  - 바코드 + 날짜(`오늘/어제/YYYY-MM-DD`)를 `recordings.recordedAt` 범위 조건으로 조회
+  - 바코드 + 날짜(`오늘/어제/그제/내일/YYYY-MM-DD/YYYY.MM.DD/YY.MM.DD/M.D/M/D/M월 D일`)를 `recordings.recordedAt` 범위 조건으로 조회
   - 날짜 해석은 KST(`Asia/Seoul`) 기준, DB 조회는 UTC 범위(`>= start_utc`, `< end_utc`)로 변환
 
 ## 아직 구현되지 않음 (중요)
@@ -220,6 +221,7 @@ LLM 변수:
 
 - Ollama: `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT_SEC`, `OLLAMA_TEMPERATURE`
 - Claude: `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ANTHROPIC_MAX_TOKENS`
+- Retrieval Synthesis: `LLM_SYNTHESIS_ENABLED`, `LLM_SYNTHESIS_MAX_EVIDENCE_CHARS`, `LLM_SYNTHESIS_MASKING_ENABLED`, `RETRIEVAL_SYNTHESIS_SYSTEM_PROMPT`
 
 바코드 프로필 API 변수:
 

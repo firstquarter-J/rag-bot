@@ -11,6 +11,7 @@ from boxer.company import settings as cs
 from boxer.company.utils import _extract_barcode
 from boxer.core import settings as s
 from boxer.core.llm import _ask_claude, _ask_ollama
+from boxer.core.retrieval_synthesis import _synthesize_retrieval_answer
 from boxer.core.thread_context import _build_model_input, _load_thread_context
 from boxer.core.utils import _validate_tokens
 from boxer.routers.company.app_user import _lookup_app_user_by_barcode, _should_lookup_barcode
@@ -73,6 +74,62 @@ def create_app() -> App:
             logger.info("Responded with pong-ec2 in thread_ts=%s", thread_ts)
             return
 
+        def _reply_with_retrieval_synthesis(
+            fallback_text: str,
+            evidence_payload: dict[str, Any],
+            route_name: str,
+        ) -> None:
+            provider = (s.LLM_PROVIDER or "").lower().strip()
+            if not s.LLM_SYNTHESIS_ENABLED or not question:
+                reply(fallback_text)
+                logger.info("Responded with %s (direct)", route_name)
+                return
+            if provider not in {"claude", "ollama"}:
+                reply(fallback_text)
+                logger.info("Responded with %s (direct, unsupported provider=%s)", route_name, provider)
+                return
+            if provider == "claude":
+                if claude_client is None:
+                    reply(fallback_text)
+                    logger.info("Responded with %s (direct, claude client unavailable)", route_name)
+                    return
+                if not cs.HYUN_USER_ID or user_id != cs.HYUN_USER_ID:
+                    reply(fallback_text)
+                    logger.info(
+                        "Responded with %s (direct, claude synthesis not allowed for user=%s)",
+                        route_name,
+                        user_id,
+                    )
+                    return
+
+            try:
+                thread_context = _load_thread_context(
+                    client,
+                    logger,
+                    channel_id,
+                    thread_ts,
+                    current_ts,
+                )
+                synthesized_text = _synthesize_retrieval_answer(
+                    question=question,
+                    thread_context=thread_context,
+                    evidence_payload=evidence_payload,
+                    provider=provider,
+                    claude_client=claude_client,
+                    system_prompt=cs.SYSTEM_PROMPT or None,
+                )
+                final_text = synthesized_text or fallback_text
+                reply(final_text)
+                logger.info(
+                    "Responded with %s (%s) in thread_ts=%s",
+                    route_name,
+                    "synthesized" if synthesized_text else "direct_fallback",
+                    thread_ts,
+                )
+            except Exception:
+                logger.exception("Retrieval synthesis failed for route=%s", route_name)
+                reply(fallback_text)
+
         try:
             s3_request = _extract_s3_request(question)
         except ValueError as exc:
@@ -91,10 +148,19 @@ def create_app() -> App:
                         client_s3,
                         s3_request["barcode"],
                     )
-                    logger.info(
-                        "Responded with s3 ultrasound result in thread_ts=%s barcode=%s",
-                        thread_ts,
-                        s3_request["barcode"],
+                    evidence_payload = {
+                        "route": "s3_ultrasound",
+                        "source": "s3",
+                        "request": {
+                            "kind": "ultrasound",
+                            "barcode": s3_request["barcode"],
+                        },
+                        "result": result_text,
+                    }
+                    _reply_with_retrieval_synthesis(
+                        result_text,
+                        evidence_payload,
+                        route_name="s3 ultrasound result",
                     )
                 else:
                     result_text = _query_s3_device_log(
@@ -102,13 +168,21 @@ def create_app() -> App:
                         s3_request["device_name"],
                         s3_request["log_date"],
                     )
-                    logger.info(
-                        "Responded with s3 log result in thread_ts=%s device=%s date=%s",
-                        thread_ts,
-                        s3_request["device_name"],
-                        s3_request["log_date"],
+                    evidence_payload = {
+                        "route": "s3_device_log",
+                        "source": "s3",
+                        "request": {
+                            "kind": "log",
+                            "deviceName": s3_request["device_name"],
+                            "logDate": s3_request["log_date"],
+                        },
+                        "result": result_text,
+                    }
+                    _reply_with_retrieval_synthesis(
+                        result_text,
+                        evidence_payload,
+                        route_name="s3 log result",
                     )
-                reply(result_text)
             except (BotoCoreError, ClientError):
                 logger.exception("S3 query failed")
                 reply("S3 조회 중 오류가 발생했어. 버킷 권한/리전/키 경로를 확인해줘")
@@ -159,13 +233,24 @@ def create_app() -> App:
                         log_date,
                         recordings_context=_get_recordings_context(),
                     )
-                reply(result_text)
-                logger.info(
-                    "Responded with barcode log analysis in thread_ts=%s barcode=%s date=%s mode=%s",
-                    thread_ts,
-                    barcode,
-                    log_date,
-                    analysis_mode,
+                context = _get_recordings_context()
+                evidence_payload = {
+                    "route": "barcode_log_analysis",
+                    "source": "box_db+s3",
+                    "request": {
+                        "barcode": barcode,
+                        "date": log_date,
+                        "mode": analysis_mode,
+                    },
+                    "recordingsSummary": context.get("summary"),
+                    "recordingsContextLimit": context.get("limit"),
+                    "recordingsHasMore": context.get("has_more"),
+                    "analysisResult": result_text,
+                }
+                _reply_with_retrieval_synthesis(
+                    result_text,
+                    evidence_payload,
+                    route_name="barcode log analysis",
                 )
             except ValueError as exc:
                 reply(f"로그 분석 요청 형식 오류: {exc}")
@@ -183,11 +268,23 @@ def create_app() -> App:
                     barcode or "",
                     recordings_context=_get_recordings_context(),
                 )
-                reply(count_result)
-                logger.info(
-                    "Responded with barcode video count in thread_ts=%s barcode=%s",
-                    thread_ts,
-                    barcode,
+                context = _get_recordings_context()
+                evidence_payload = {
+                    "route": "barcode_video_count",
+                    "source": "box_db.recordings",
+                    "request": {
+                        "barcode": barcode,
+                        "question": question,
+                    },
+                    "recordingsSummary": context.get("summary"),
+                    "recordingsContextLimit": context.get("limit"),
+                    "recordingsHasMore": context.get("has_more"),
+                    "queryResult": count_result,
+                }
+                _reply_with_retrieval_synthesis(
+                    count_result,
+                    evidence_payload,
+                    route_name="barcode video count",
                 )
             except (pymysql.MySQLError, RuntimeError):
                 logger.exception("Barcode video count query failed")
@@ -203,11 +300,23 @@ def create_app() -> App:
                     barcode or "",
                     recordings_context=_get_recordings_context(),
                 )
-                reply(result_text)
-                logger.info(
-                    "Responded with barcode all recorded dates in thread_ts=%s barcode=%s",
-                    thread_ts,
-                    barcode,
+                context = _get_recordings_context()
+                evidence_payload = {
+                    "route": "barcode_all_recorded_dates",
+                    "source": "box_db.recordings",
+                    "request": {
+                        "barcode": barcode,
+                        "question": question,
+                    },
+                    "recordingsSummary": context.get("summary"),
+                    "recordingsContextLimit": context.get("limit"),
+                    "recordingsHasMore": context.get("has_more"),
+                    "queryResult": result_text,
+                }
+                _reply_with_retrieval_synthesis(
+                    result_text,
+                    evidence_payload,
+                    route_name="barcode all recorded dates",
                 )
             except (pymysql.MySQLError, RuntimeError):
                 logger.exception("Barcode all recorded dates query failed")
@@ -223,11 +332,23 @@ def create_app() -> App:
                     barcode or "",
                     recordings_context=_get_recordings_context(),
                 )
-                reply(result_text)
-                logger.info(
-                    "Responded with barcode last recordedAt in thread_ts=%s barcode=%s",
-                    thread_ts,
-                    barcode,
+                context = _get_recordings_context()
+                evidence_payload = {
+                    "route": "barcode_last_recorded_at",
+                    "source": "box_db.recordings",
+                    "request": {
+                        "barcode": barcode,
+                        "question": question,
+                    },
+                    "recordingsSummary": context.get("summary"),
+                    "recordingsContextLimit": context.get("limit"),
+                    "recordingsHasMore": context.get("has_more"),
+                    "queryResult": result_text,
+                }
+                _reply_with_retrieval_synthesis(
+                    result_text,
+                    evidence_payload,
+                    route_name="barcode last recordedAt",
                 )
             except (pymysql.MySQLError, RuntimeError):
                 logger.exception("Barcode last recordedAt query failed")
@@ -245,12 +366,24 @@ def create_app() -> App:
                     target_date,
                     recordings_context=_get_recordings_context(),
                 )
-                reply(result_text)
-                logger.info(
-                    "Responded with barcode recordedAt-on-date in thread_ts=%s barcode=%s date=%s",
-                    thread_ts,
-                    barcode,
-                    target_date,
+                context = _get_recordings_context()
+                evidence_payload = {
+                    "route": "barcode_recorded_on_date",
+                    "source": "box_db.recordings",
+                    "request": {
+                        "barcode": barcode,
+                        "question": question,
+                        "targetDate": target_date,
+                    },
+                    "recordingsSummary": context.get("summary"),
+                    "recordingsContextLimit": context.get("limit"),
+                    "recordingsHasMore": context.get("has_more"),
+                    "queryResult": result_text,
+                }
+                _reply_with_retrieval_synthesis(
+                    result_text,
+                    evidence_payload,
+                    route_name="barcode recordedAt-on-date",
                 )
             except ValueError as exc:
                 reply(f"영상 날짜 조회 요청 형식 오류: {exc}")
@@ -304,8 +437,22 @@ def create_app() -> App:
             try:
                 safe_sql = _validate_readonly_sql(db_query)
                 db_result = _query_db(safe_sql)
-                reply(_format_db_query_result(db_result))
-                logger.info("Responded with db query result in thread_ts=%s", thread_ts)
+                formatted_result = _format_db_query_result(db_result)
+                evidence_payload = {
+                    "route": "db_query",
+                    "source": "db",
+                    "request": {
+                        "question": question,
+                        "sql": safe_sql,
+                    },
+                    "dbResult": db_result,
+                    "formattedResult": formatted_result,
+                }
+                _reply_with_retrieval_synthesis(
+                    formatted_result,
+                    evidence_payload,
+                    route_name="db query result",
+                )
             except ValueError as exc:
                 reply(f"DB 조회 요청 형식 오류: {exc}")
             except pymysql.MySQLError:

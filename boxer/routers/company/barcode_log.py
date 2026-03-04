@@ -10,6 +10,16 @@ from boxer.core.utils import _display_value, _format_size, _truncate_text
 from boxer.routers.company.box_db import _lookup_device_names_by_barcode
 from boxer.routers.company.s3_domain import _fetch_s3_device_log_lines
 
+_NUMERIC_YMD_PATTERN = re.compile(r"(?<!\d)(\d{2,4})\s*[-./]\s*(\d{1,2})\s*[-./]\s*(\d{1,2})(?!\d)")
+_KOREAN_YMD_PATTERN = re.compile(
+    r"(?<!\d)(\d{2,4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일(?!\d)"
+)
+_NUMERIC_MD_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*[./]\s*(\d{1,2})(?!\d)")
+_KOREAN_MD_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*월\s*(\d{1,2})\s*일(?!\d)")
+_TODAY_HINTS = ("오늘", "금일", "today")
+_DAY_BEFORE_YESTERDAY_HINTS = ("그제", "엊그제", "day before yesterday")
+_TOMORROW_HINTS = ("내일", "tomorrow")
+
 
 def _current_local_date() -> datetime.date:
     tz_name = os.getenv("TZ", "Asia/Seoul")
@@ -22,22 +32,79 @@ def _current_local_date() -> datetime.date:
             return datetime.utcnow().date()
 
 
+def _normalize_year(raw_year: int) -> int:
+    if raw_year < 100:
+        return 2000 + raw_year
+    return raw_year
+
+
+def _try_format_date(year: int, month: int, day: int) -> str | None:
+    try:
+        parsed = datetime(year=year, month=month, day=day)
+    except ValueError:
+        return None
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _parse_explicit_date_expression(text: str) -> tuple[bool, str | None]:
+    candidates: list[tuple[int, str, re.Match[str]]] = []
+    for kind, pattern in (
+        ("korean_ymd", _KOREAN_YMD_PATTERN),
+        ("numeric_ymd", _NUMERIC_YMD_PATTERN),
+        ("korean_md", _KOREAN_MD_PATTERN),
+        ("numeric_md", _NUMERIC_MD_PATTERN),
+    ):
+        matched = pattern.search(text)
+        if matched:
+            candidates.append((matched.start(), kind, matched))
+
+    if not candidates:
+        return False, None
+
+    _, kind, matched = min(candidates, key=lambda item: item[0])
+
+    if kind in {"korean_ymd", "numeric_ymd"}:
+        year = _normalize_year(int(matched.group(1)))
+        month = int(matched.group(2))
+        day = int(matched.group(3))
+        return True, _try_format_date(year, month, day)
+
+    local_year = _current_local_date().year
+    month = int(matched.group(1))
+    day = int(matched.group(2))
+    return True, _try_format_date(local_year, month, day)
+
+
+def _extract_relative_day_offset(text: str, lowered: str) -> int | None:
+    if any(token in text or token in lowered for token in _DAY_BEFORE_YESTERDAY_HINTS):
+        return -2
+    if any(token in text or token in lowered for token in cs.YESTERDAY_HINTS):
+        return -1
+    if any(token in text or token in lowered for token in _TOMORROW_HINTS):
+        return 1
+    if any(token in text or token in lowered for token in _TODAY_HINTS):
+        return 0
+    return None
+
+
+def _has_relative_date_token(text: str, lowered: str) -> bool:
+    return _extract_relative_day_offset(text, lowered) is not None
+
+
 def _extract_log_date(question: str) -> str:
     text = (question or "").strip()
     lowered = text.lower()
 
-    matched = cs.LOG_DATE_PATTERN.search(text)
-    if matched:
-        raw_date = matched.group(1)
-        try:
-            parsed = datetime.strptime(raw_date, "%Y-%m-%d")
-        except ValueError as exc:
-            raise ValueError("날짜 형식은 YYYY-MM-DD로 입력해줘") from exc
-        return parsed.strftime("%Y-%m-%d")
+    has_explicit_date, parsed_explicit_date = _parse_explicit_date_expression(text)
+    if has_explicit_date:
+        if parsed_explicit_date is None:
+            raise ValueError("날짜 형식을 확인해줘. 예: 2026-03-03, 26.03.03, 3/3, 3월 3일")
+        return parsed_explicit_date
 
     base_date = _current_local_date()
-    if any(token in lowered for token in cs.YESTERDAY_HINTS):
-        base_date = base_date - timedelta(days=1)
+    relative_offset = _extract_relative_day_offset(text, lowered)
+    if relative_offset is not None:
+        base_date = base_date + timedelta(days=relative_offset)
     return base_date.strftime("%Y-%m-%d")
 
 
@@ -118,9 +185,8 @@ def _is_barcode_video_recorded_on_date_request(question: str, barcode: str | Non
     if not has_video_hint:
         return False
 
-    has_date_token = bool(cs.LOG_DATE_PATTERN.search(text)) or ("오늘" in text) or any(
-        token in lowered for token in cs.YESTERDAY_HINTS
-    ) or ("today" in lowered) or ("금일" in text)
+    has_explicit_date, _ = _parse_explicit_date_expression(text)
+    has_date_token = has_explicit_date or _has_relative_date_token(text, lowered)
     if not has_date_token:
         return False
 
