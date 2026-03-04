@@ -38,10 +38,15 @@
 - S3 조회 명령은 명시적 커맨드 형태만 지원:
   - `s3 영상 <바코드>`
   - `s3 로그 <장비명> <YYYY-MM-DD>`
+- 바코드 + 로그 자연어 요청을 부분 지원:
+  - 바코드를 `recordings.fullBarcode`로 조회해 `devices.deviceName` 매핑
+  - `오늘/어제/YYYY-MM-DD` 날짜 파싱 후 `장비명/log-YYYY-MM-DD.log` 분석
+  - 에러/오류 키워드가 있으면 에러 라인 분석
+  - 그 외에는 `Scanned:` 이벤트를 `시간: 명령` 타임라인으로 응답
 
 ## 아직 구현되지 않음 (중요)
 
-- 자연어 의도 라우팅은 아직 부분 구현 상태
+- 자연어 의도 라우팅은 아직 부분 구현 상태 (현재는 바코드 로그 분석 의도만 우선 지원)
 - 멀티 소스 조회 오케스트레이션(S3 + Notion + DB) 미완성
 - 근거 메타데이터 영구 저장 경로(table/index) 미확정
 
@@ -146,6 +151,8 @@ S3 조회 변수:
 - `S3_ULTRASOUND_BUCKET`, `S3_LOG_BUCKET`
 - `S3_QUERY_TIMEOUT_SEC`, `S3_QUERY_MAX_KEYS`, `S3_QUERY_MAX_ITEMS`, `S3_QUERY_MAX_RESULT_CHARS`
 - `S3_LOG_TAIL_BYTES`, `S3_LOG_TAIL_LINES`
+- `LOG_ANALYSIS_MAX_DEVICES`, `LOG_ANALYSIS_MAX_SAMPLES`
+- `LOG_SCAN_MAX_EVENTS`
 - Access Key 방식일 때만 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` 사용
 
 3. 실행
@@ -170,6 +177,12 @@ python app.py
 - S3 명시적 조회 모드
   - `@Boxer s3 영상 43032748143`
   - `@Boxer s3 로그 MB2-X00001 2026-03-04`
+
+- 바코드 로그 자연어 분석 모드
+  - `@Boxer 43032748143 바코드로 오늘 로그 에러 분석해줘`
+  - `@Boxer 43032748143 어제 로그에 오류 있었어?`
+  - `@Boxer 43032748143 오늘 로그 단순 분석해줘`
+  - `@Boxer 43032748143 오늘 로그 스캔 명령 타임라인 보여줘`
 
 ## 운영 로그
 

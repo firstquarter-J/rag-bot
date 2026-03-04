@@ -2,9 +2,10 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from urllib import error, parse, request
+from zoneinfo import ZoneInfo
 
 import boto3
 import pymysql
@@ -62,6 +63,9 @@ S3_QUERY_MAX_ITEMS = int(os.getenv("S3_QUERY_MAX_ITEMS", "20"))
 S3_QUERY_MAX_RESULT_CHARS = int(os.getenv("S3_QUERY_MAX_RESULT_CHARS", "3500"))
 S3_LOG_TAIL_BYTES = int(os.getenv("S3_LOG_TAIL_BYTES", "50000"))
 S3_LOG_TAIL_LINES = int(os.getenv("S3_LOG_TAIL_LINES", "80"))
+LOG_ANALYSIS_MAX_DEVICES = int(os.getenv("LOG_ANALYSIS_MAX_DEVICES", "8"))
+LOG_ANALYSIS_MAX_SAMPLES = int(os.getenv("LOG_ANALYSIS_MAX_SAMPLES", "5"))
+LOG_SCAN_MAX_EVENTS = int(os.getenv("LOG_SCAN_MAX_EVENTS", "50"))
 DEFAULT_DB_QUERY = "SELECT NOW() AS now_time, DATABASE() AS db_name"
 BARCODE_PATTERN = re.compile(r"(?<!\d)(\d{11})(?!\d)")
 DB_WRITE_SQL_PATTERN = re.compile(
@@ -75,6 +79,7 @@ S3_LOG_PATH_PATTERN = re.compile(
 )
 S3_LOG_FILE_TOKEN_PATTERN = re.compile(r"^log-(20\d{2}-\d{2}-\d{2})\.log$", re.IGNORECASE)
 S3_DEVICE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,}$")
+LOG_DATE_PATTERN = re.compile(r"(20\d{2}-\d{2}-\d{2})")
 S3_LOG_RESERVED_TOKENS = {
     "s3",
     "조회",
@@ -85,6 +90,41 @@ S3_LOG_RESERVED_TOKENS = {
     "보여줘",
     "로그",
     "log",
+}
+YESTERDAY_HINTS = ("어제", "전일", "yesterday")
+LOG_ERROR_KEYWORDS = (
+    "error",
+    "err",
+    "exception",
+    "fatal",
+    "fail",
+    "timeout",
+    "timed out",
+    "traceback",
+    "panic",
+    "오류",
+    "에러",
+    "실패",
+    "타임아웃",
+    "예외",
+)
+SCAN_FOCUSED_HINTS = (
+    "단순",
+    "스캔",
+    "명령",
+    "커맨드",
+    "command",
+    "scan",
+    "타임라인",
+)
+SCANNED_TOKEN_PATTERN = re.compile(r"Scanned:\s*([^\s]+)", re.IGNORECASE)
+LOG_LINE_TIME_PATTERN = re.compile(r"\b(\d{2}:\d{2}:\d{2})\b")
+SCAN_CODE_LABELS: dict[str, str] = {
+    "C_STOPSESS": "녹화 중지",
+    "C_PAUSE": "일시정지",
+    "C_RESUME": "재개",
+    "C_CCLREC": "녹화 취소",
+    "SPECIAL_TAKE_SNAP": "캡처/스냅샷",
 }
 COMMON_SYSTEM_PROMPT = (
     "You are Boxer, the internal assistant for Box and Humanscape. "
@@ -315,6 +355,50 @@ def _build_s3_client() -> Any:
     return boto3.client("s3", region_name=AWS_REGION, config=config)
 
 
+def _current_local_date() -> datetime.date:
+    tz_name = os.getenv("TZ", "Asia/Seoul")
+    try:
+        return datetime.now(ZoneInfo(tz_name)).date()
+    except Exception:
+        try:
+            return datetime.now(ZoneInfo("Asia/Seoul")).date()
+        except Exception:
+            return datetime.utcnow().date()
+
+
+def _extract_log_date(question: str) -> str:
+    text = (question or "").strip()
+    lowered = text.lower()
+
+    matched = LOG_DATE_PATTERN.search(text)
+    if matched:
+        raw_date = matched.group(1)
+        try:
+            parsed = datetime.strptime(raw_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("날짜 형식은 YYYY-MM-DD로 입력해줘") from exc
+        return parsed.strftime("%Y-%m-%d")
+
+    base_date = _current_local_date()
+    if any(token in lowered for token in YESTERDAY_HINTS):
+        base_date = base_date - timedelta(days=1)
+    # 기본값은 오늘(질문에 날짜가 없을 때)
+    return base_date.strftime("%Y-%m-%d")
+
+
+def _is_barcode_log_analysis_request(question: str, barcode: str | None) -> bool:
+    if not barcode:
+        return False
+    text = (question or "").strip()
+    lowered = text.lower()
+    has_log_hint = ("로그" in text and "로그인" not in text) or bool(
+        re.search(r"\blog\b", lowered)
+    )
+    if not has_log_hint:
+        return False
+    return True
+
+
 def _create_db_connection(timeout_sec: int | None = None) -> Any:
     actual_timeout = max(1, timeout_sec if timeout_sec is not None else DB_QUERY_TIMEOUT_SEC)
     return pymysql.connect(
@@ -330,6 +414,61 @@ def _create_db_connection(timeout_sec: int | None = None) -> Any:
         autocommit=True,
         cursorclass=pymysql.cursors.DictCursor,
     )
+
+
+def _lookup_device_names_by_barcode(barcode: str) -> list[str]:
+    if not BOX_DB_HOST or not BOX_DB_USERNAME or not BOX_DB_PASSWORD or not BOX_DB_DATABASE:
+        raise RuntimeError("BOX DB 접속 정보가 비어 있어")
+
+    sql_candidates = [
+        (
+            "SELECT DISTINCT d.deviceName AS deviceName "
+            "FROM recordings r "
+            "JOIN devices d ON d.deviceSeq = r.deviceSeq AND d.hospitalSeq = r.hospitalSeq "
+            "WHERE r.fullBarcode = %s AND COALESCE(d.deviceName, '') <> '' "
+            "LIMIT %s"
+        ),
+        (
+            "SELECT DISTINCT d.deviceName AS deviceName "
+            "FROM recordings r "
+            "JOIN devices d ON d.deviceSeq = r.deviceSeq "
+            "WHERE r.fullBarcode = %s AND COALESCE(d.deviceName, '') <> '' "
+            "LIMIT %s"
+        ),
+    ]
+
+    limit = max(1, min(50, LOG_ANALYSIS_MAX_DEVICES * 2))
+    last_error: Exception | None = None
+    connection = _create_db_connection(DB_QUERY_TIMEOUT_SEC)
+    try:
+        with connection.cursor() as cursor:
+            for sql in sql_candidates:
+                try:
+                    cursor.execute(sql, (barcode, limit))
+                    rows = cursor.fetchall()
+                except pymysql.MySQLError as exc:
+                    last_error = exc
+                    continue
+
+                names: list[str] = []
+                seen: set[str] = set()
+                for row in rows:
+                    name = _display_value(row.get("deviceName"), default="")
+                    if not name:
+                        continue
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    names.append(name)
+                if names:
+                    return names
+    finally:
+        connection.close()
+
+    if last_error:
+        raise last_error
+    return []
+
 
 def _fetch_s3_device_log_lines(
     s3_client: Any,
@@ -377,6 +516,197 @@ def _fetch_s3_device_log_lines(
         "content_length": content_length,
         "lines": lines,
     }
+
+
+def _find_error_lines(lines: list[str]) -> list[tuple[int, str]]:
+    matches: list[tuple[int, str]] = []
+    for line_no, line in enumerate(lines, start=1):
+        lowered = line.lower()
+        if any(keyword in lowered for keyword in LOG_ERROR_KEYWORDS):
+            matches.append((line_no, line))
+    return matches
+
+
+def _is_error_focused_request(question: str) -> bool:
+    lowered = (question or "").lower()
+    return any(keyword in lowered for keyword in LOG_ERROR_KEYWORDS)
+
+
+def _is_scan_focused_request(question: str) -> bool:
+    lowered = (question or "").lower()
+    return any(keyword in lowered for keyword in SCAN_FOCUSED_HINTS)
+
+
+def _extract_time_label_from_line(line: str) -> str:
+    matched = LOG_LINE_TIME_PATTERN.search(line)
+    if matched:
+        return matched.group(1)
+    return "시간미상"
+
+
+def _parse_scanned_event(line: str) -> tuple[str, str] | None:
+    matched = SCANNED_TOKEN_PATTERN.search(line)
+    if not matched:
+        return None
+    token = matched.group(1).strip().strip("`'\",;:()[]{}")
+    upper_token = token.upper()
+    if upper_token in SCAN_CODE_LABELS:
+        return token, SCAN_CODE_LABELS[upper_token]
+    if re.fullmatch(r"\d{11}", token):
+        return token, "녹화 시작 바코드 스캔"
+    return token, f"기타 스캔 ({token})"
+
+
+def _extract_scan_events(lines: list[str]) -> list[tuple[str, str, str]]:
+    events: list[tuple[str, str, str]] = []
+    for line in lines:
+        parsed = _parse_scanned_event(line)
+        if not parsed:
+            continue
+        token, label = parsed
+        time_label = _extract_time_label_from_line(line)
+        events.append((time_label, label, token))
+    return events
+
+
+def _analyze_barcode_log_scan_events(s3_client: Any, barcode: str, log_date: str) -> str:
+    device_names = _lookup_device_names_by_barcode(barcode)
+    if not device_names:
+        return (
+            "*바코드 로그 스캔 분석 결과*\n"
+            f"• 바코드: `{barcode}`\n"
+            f"• 날짜: `{log_date}`\n"
+            "• recordings/devices에서 매핑된 장비명을 찾지 못했어"
+        )
+
+    max_devices = max(1, min(20, LOG_ANALYSIS_MAX_DEVICES))
+    target_devices = device_names[:max_devices]
+    omitted_device_count = max(0, len(device_names) - len(target_devices))
+    total_events = 0
+
+    lines = [
+        "*바코드 로그 스캔 분석 결과*",
+        f"• 바코드: `{barcode}`",
+        f"• 날짜: `{log_date}`",
+        f"• 매핑 장비: `{len(device_names)}개`",
+    ]
+    if omitted_device_count > 0:
+        lines.append(
+            f"• 참고: 장비가 많아서 상위 `{len(target_devices)}개`만 분석했어"
+        )
+
+    event_limit = max(1, min(200, LOG_SCAN_MAX_EVENTS))
+    for device_name in target_devices:
+        log_data = _fetch_s3_device_log_lines(s3_client, device_name, log_date)
+        lines.append("")
+        lines.append(f"*장비 `{device_name}`*")
+
+        if not log_data["found"]:
+            lines.append(f"• 로그 파일 없음: `{log_data['key']}`")
+            continue
+
+        source_lines = log_data["lines"]
+        max_lines = max(1, min(500, S3_LOG_TAIL_LINES))
+        if len(source_lines) > max_lines:
+            source_lines = source_lines[-max_lines:]
+
+        events = _extract_scan_events(source_lines)
+        total_events += len(events)
+
+        lines.append(f"• 파일: `{log_data['key']}`")
+        lines.append(f"• 분석 범위: 최근 `{len(source_lines)}줄`")
+        lines.append(f"• 스캔 이벤트: *{len(events)}건*")
+
+        if not events:
+            lines.append("• 타임라인: 없음")
+            continue
+
+        display_events = events[-event_limit:]
+        if len(events) > len(display_events):
+            lines.append(
+                f"• 참고: 이벤트가 많아서 최근 `{len(display_events)}건`만 표시해"
+            )
+        for time_label, label, token in display_events:
+            lines.append(f"- {time_label}: {label} (`{token}`)")
+
+    lines.append("")
+    if total_events > 0:
+        lines.append(f"*요약*: 분석 범위에서 스캔 이벤트 `{total_events}건`을 찾았어")
+    else:
+        lines.append("*요약*: 분석 범위에서 스캔 이벤트를 찾지 못했어")
+    lines.append("※ 현재는 로그 tail(최근 구간) 기준 분석이야")
+
+    return _truncate_text("\n".join(lines), S3_QUERY_MAX_RESULT_CHARS)
+
+
+def _analyze_barcode_log_errors(s3_client: Any, barcode: str, log_date: str) -> str:
+    device_names = _lookup_device_names_by_barcode(barcode)
+    if not device_names:
+        return (
+            "*바코드 로그 에러 분석 결과*\n"
+            f"• 바코드: `{barcode}`\n"
+            f"• 날짜: `{log_date}`\n"
+            "• recordings/devices에서 매핑된 장비명을 찾지 못했어"
+        )
+
+    max_devices = max(1, min(20, LOG_ANALYSIS_MAX_DEVICES))
+    target_devices = device_names[:max_devices]
+    omitted_device_count = max(0, len(device_names) - len(target_devices))
+
+    total_error_lines = 0
+    lines = [
+        "*바코드 로그 에러 분석 결과*",
+        f"• 바코드: `{barcode}`",
+        f"• 날짜: `{log_date}`",
+        f"• 매핑 장비: `{len(device_names)}개`",
+    ]
+    if omitted_device_count > 0:
+        lines.append(
+            f"• 참고: 장비가 많아서 상위 `{len(target_devices)}개`만 분석했어"
+        )
+
+    for device_name in target_devices:
+        log_data = _fetch_s3_device_log_lines(s3_client, device_name, log_date)
+        lines.append("")
+        lines.append(f"*장비 `{device_name}`*")
+
+        if not log_data["found"]:
+            lines.append(f"• 로그 파일 없음: `{log_data['key']}`")
+            continue
+
+        source_lines = log_data["lines"]
+        max_lines = max(1, min(500, S3_LOG_TAIL_LINES))
+        if len(source_lines) > max_lines:
+            source_lines = source_lines[-max_lines:]
+
+        error_lines = _find_error_lines(source_lines)
+        total_error_lines += len(error_lines)
+
+        lines.append(f"• 파일: `{log_data['key']}`")
+        lines.append(f"• 파일 크기: `{_format_size(log_data['content_length'])}`")
+        lines.append(f"• 분석 범위: 최근 `{len(source_lines)}줄`")
+        lines.append(f"• 에러 패턴 라인 수: *{len(error_lines)}줄*")
+
+        if not error_lines:
+            lines.append("• 샘플: 없음")
+            continue
+
+        sample_count = max(1, min(10, LOG_ANALYSIS_MAX_SAMPLES))
+        for index, (line_no, content) in enumerate(error_lines[-sample_count:], start=1):
+            sample = content.strip()
+            if len(sample) > 220:
+                sample = sample[:220] + "...(truncated)"
+            lines.append(f"{index}. [{line_no}] {sample}")
+
+    lines.append("")
+    if total_error_lines > 0:
+        lines.append(f"*요약*: 분석 범위에서 에러 패턴 라인 `{total_error_lines}줄`을 찾았어")
+    else:
+        lines.append("*요약*: 분석 범위에서 에러 패턴 라인을 찾지 못했어")
+    lines.append("※ 현재는 로그 tail(최근 구간) 기준 분석이야")
+
+    return _truncate_text("\n".join(lines), S3_QUERY_MAX_RESULT_CHARS)
+
 
 def _extract_s3_log_request(normalized_question: str) -> dict[str, str]:
     path_match = S3_LOG_PATH_PATTERN.search(normalized_question)
@@ -845,6 +1175,81 @@ def create_app() -> App:
 
         db_query = _extract_db_query(question)
         barcode = _extract_barcode(question)
+        if _is_barcode_log_analysis_request(question, barcode):
+            if not S3_QUERY_ENABLED:
+                say(
+                    text=_format_reply_text(
+                        user_id,
+                        "로그 분석 기능이 꺼져 있어. .env에서 S3_QUERY_ENABLED=true로 설정해줘",
+                    ),
+                    thread_ts=thread_ts,
+                )
+                return
+            if not BOX_DB_HOST or not BOX_DB_USERNAME or not BOX_DB_PASSWORD or not BOX_DB_DATABASE:
+                say(
+                    text=_format_reply_text(
+                        user_id,
+                        "바코드 로그 분석을 위해 BOX DB 접속 정보(BOX_DB_*)가 필요해",
+                    ),
+                    thread_ts=thread_ts,
+                )
+                return
+
+            try:
+                log_date = _extract_log_date(question)
+                analysis_mode = (
+                    "error"
+                    if _is_error_focused_request(question) and not _is_scan_focused_request(question)
+                    else "scan"
+                )
+                if analysis_mode == "error":
+                    result_text = _analyze_barcode_log_errors(
+                        _get_s3_client(),
+                        barcode or "",
+                        log_date,
+                    )
+                else:
+                    result_text = _analyze_barcode_log_scan_events(
+                        _get_s3_client(),
+                        barcode or "",
+                        log_date,
+                    )
+                say(text=_format_reply_text(user_id, result_text), thread_ts=thread_ts)
+                logger.info(
+                    "Responded with barcode log analysis in thread_ts=%s barcode=%s date=%s mode=%s",
+                    thread_ts,
+                    barcode,
+                    log_date,
+                    analysis_mode,
+                )
+            except ValueError as exc:
+                say(
+                    text=_format_reply_text(
+                        user_id,
+                        f"로그 분석 요청 형식 오류: {exc}",
+                    ),
+                    thread_ts=thread_ts,
+                )
+            except (BotoCoreError, ClientError, pymysql.MySQLError):
+                logger.exception("Barcode log analysis failed")
+                say(
+                    text=_format_reply_text(
+                        user_id,
+                        "바코드 로그 분석 중 오류가 발생했어. DB 연결/S3 권한/로그 경로를 확인해줘",
+                    ),
+                    thread_ts=thread_ts,
+                )
+            except Exception:
+                logger.exception("Barcode log analysis failed")
+                say(
+                    text=_format_reply_text(
+                        user_id,
+                        "바코드 로그 분석 중 오류가 발생했어. 잠시 후 다시 시도해줘",
+                    ),
+                    thread_ts=thread_ts,
+                )
+            return
+
         if barcode and _should_lookup_barcode(question, barcode):
             if user_id in APP_USER_LOOKUP_ALLOWED_USER_IDS:
                 try:
