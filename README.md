@@ -21,6 +21,39 @@
 - 회사 도메인 규칙(바코드/영상/로그), 권한 정책, 내부 데이터 소스 연결
 - 코어와 분리해 운영하며 민감 정보/내부 정책은 비공개 유지
 
+## 현재 코드 모듈 경계
+
+- `boxer/adapters/common`
+  - 채널 공통 전송 레이어
+  - Slack Bolt 초기화, 이벤트 정규화, 공통 reply 래퍼 담당
+  - 환경변수 검증은 Slack 필수 토큰만 수행
+- `boxer/adapters/company`
+  - 회사 전용 채널 핸들러
+  - app_mention 정책 가드/권한/도메인 라우팅/응답 정책 담당
+  - LLM/DB/S3 환경변수 검증은 이 레이어에서 수행
+- `boxer/adapters/factory.py`
+  - 환경변수 `ADAPTER_ENTRYPOINT`로 활성 어댑터 선택
+  - 기본값: `boxer.adapters.sample.slack:create_app`
+- `boxer/adapters/slack.py`
+  - 기존 경로 호환을 위한 legacy alias
+  - 내부적으로 `ADAPTER_ENTRYPOINT`를 따라 어댑터를 재로딩(재귀 방지 포함)
+- `boxer/core`
+  - 설정, 공통 유틸, LLM 호출, 스레드 컨텍스트 처리
+- `boxer/company`
+  - 회사 전용 설정/정책/패턴/프롬프트
+  - 사용자 권한 ID, 바코드/로그 규칙, 회사용 시스템 프롬프트
+- `boxer/routers/common`
+  - 제품 공통으로 재사용 가능한 저수준 기능만 포함
+  - `db.py`: read-only DB 연결/검증/실행(명령 파싱/문구 제외)
+  - `s3.py`: S3 client 생성
+- `boxer/routers/company`
+  - 회사 도메인 로직 전용
+  - 예: 바코드 영상 개수, app-user 조회, 장비 로그 파싱/분석, S3 요청 파싱
+
+원칙:
+- 타인이 이 저장소를 사용할 때 `common`은 그대로 재사용
+- `company`는 각 조직 규칙에 맞춰 교체/재구현
+
 ## 프로젝트 목표
 
 - 오픈소스 코어를 먼저 단단히 구축
@@ -51,6 +84,7 @@
 - S3 조회 명령은 명시적 커맨드 형태만 지원:
   - `s3 영상 <바코드>`
   - `s3 로그 <장비명> <YYYY-MM-DD>`
+- S3 요청 파싱/조회 응답은 회사 도메인 Router(`routers/company`)에서 처리
 - 바코드 + 로그 자연어 요청을 부분 지원:
   - 바코드를 `recordings.fullBarcode`로 조회해 `devices.deviceName` 매핑
   - `오늘/어제/YYYY-MM-DD` 날짜 파싱 후 `장비명/log-YYYY-MM-DD.log` 분석
@@ -170,6 +204,11 @@ cp .env.example .env
 - `SLACK_SIGNING_SECRET`
 - `LLM_PROVIDER` (`ollama` 또는 `claude`)
 
+어댑터 선택 변수(선택):
+
+- `ADAPTER_ENTRYPOINT` (기본값 `boxer.adapters.sample.slack:create_app`)
+- 예: `boxer.adapters.company.slack:create_app`
+
 LLM 변수:
 
 - Ollama: `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT_SEC`, `OLLAMA_TEMPERATURE`
@@ -179,12 +218,16 @@ LLM 변수:
 
 - `APP_USER_API_URL`
 - `APP_USER_API_TIMEOUT_SEC`
+- `MODEL_OWNER_USER_ID`, `MARK_USER_ID`, `DD_USER_ID`
+- `APP_USER_LOOKUP_ALLOWED_USER_IDS` (콤마 구분)
+- `COMPANY_SYSTEM_PROMPT` (선택)
 
 DB 조회 변수:
 
 - `DB_QUERY_ENABLED=true`
-- `BOX_DB_HOST`, `BOX_DB_PORT`, `BOX_DB_USERNAME`, `BOX_DB_PASSWORD`, `BOX_DB_DATABASE`
+- `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`
 - `DB_QUERY_TIMEOUT_SEC`, `DB_QUERY_MAX_ROWS`, `DB_QUERY_MAX_SQL_CHARS`, `DB_QUERY_MAX_RESULT_CHARS`
+- 하위호환: company 어댑터 사용 시 `BOX_DB_*`를 `DB_*`로 매핑하는 레거시 호환이 동작
 
 S3 조회 변수:
 
@@ -193,8 +236,7 @@ S3 조회 변수:
 - `S3_ULTRASOUND_BUCKET`, `S3_LOG_BUCKET`
 - `S3_QUERY_TIMEOUT_SEC`, `S3_QUERY_MAX_KEYS`, `S3_QUERY_MAX_ITEMS`, `S3_QUERY_MAX_RESULT_CHARS`
 - `S3_LOG_TAIL_BYTES`, `S3_LOG_TAIL_LINES`
-- `LOG_ANALYSIS_MAX_DEVICES`, `LOG_ANALYSIS_MAX_SAMPLES`
-- `LOG_SCAN_MAX_EVENTS`
+- `LOG_ANALYSIS_MAX_DEVICES`, `LOG_ANALYSIS_MAX_SAMPLES`, `LOG_SCAN_MAX_EVENTS`, `LOG_SESSION_SAFETY_LINES`
 - Access Key 방식일 때만 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` 사용
 
 3. 실행
@@ -297,7 +339,7 @@ sudo journalctl -u boxer -f -o short-iso
 
 - S3 명시적 조회 모드
   - `@Boxer s3 영상 43032748143`
-  - `@Boxer s3 로그 MB2-X00001 2026-03-04`
+  - `@Boxer s3 로그 <device-name> 2026-03-04`
 
 - 바코드 로그 자연어 분석 모드
   - `@Boxer 43032748143 바코드로 오늘 로그 에러 분석해줘`
@@ -381,7 +423,7 @@ Slack/Web -> Input Normalizer -> Intent/Slot Router -> Policy Guard -> Tool Exec
 
 ## 구현 페이즈 기록 (History + Progress)
 
-최종 업데이트: `2026-02-28`
+최종 업데이트: `2026-03-04`
 
 ### 큰 목차
 
@@ -410,6 +452,9 @@ Slack/Web -> Input Normalizer -> Intent/Slot Router -> Policy Guard -> Tool Exec
 - 바코드 프로필 조회 + 권한 게이트(owner/Mark)
 - 미인가 요청 시 `보안 책임자 @DD 의 승인이 필요합니다.` 응답
 - 명시적 읽기 전용 DB 조회 모드
+- 모듈 경계 1차 분리 (`adapters.common` / `adapters.company` / `core` / `routers.common` / `routers.company`)
+- 코어/회사 설정 분리 (`core.settings` / `company.settings`)
+- 어댑터 엔트리포인트 선택 지원 (`ADAPTER_ENTRYPOINT`)
 
 진행중:
 - 없음
