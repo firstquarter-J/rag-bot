@@ -50,3 +50,15 @@ Resolve: #1
 ## Communication Rule
 
 - 답변은 반말로, 짧고 핵심만 전달
+
+## EC2 Log Rule
+
+- 실시간 로그: `sudo journalctl -u boxer -f -o short-iso`
+- 최근 100줄: `sudo journalctl -u boxer -n 100 --no-pager -o short-iso`
+
+## DB Schema Rule
+
+- `devices` 기본 키 컬럼은 `seq`
+- `recordings.deviceSeq` 조인 시 `devices.deviceSeq`가 아니라 `devices.seq`를 사용
+- 공통 규칙: FK 이름이 `xxxSeq`여도 참조 대상 테이블 PK는 대체로 `seq`
+- 예: `recordings.deviceSeq -> devices.seq`, `recordingSeq -> recordings.seq`

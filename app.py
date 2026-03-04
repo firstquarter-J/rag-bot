@@ -68,8 +68,20 @@ LOG_ANALYSIS_MAX_SAMPLES = int(os.getenv("LOG_ANALYSIS_MAX_SAMPLES", "5"))
 LOG_SCAN_MAX_EVENTS = int(os.getenv("LOG_SCAN_MAX_EVENTS", "50"))
 DEFAULT_DB_QUERY = "SELECT NOW() AS now_time, DATABASE() AS db_name"
 BARCODE_PATTERN = re.compile(r"(?<!\d)(\d{11})(?!\d)")
-DB_WRITE_SQL_PATTERN = re.compile(
-    r"\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|replace)\b",
+DB_READONLY_SQL_HEAD_PATTERN = re.compile(
+    r"^(select|show|describe|desc|explain|with)\b",
+    re.IGNORECASE,
+)
+DB_FORBIDDEN_SQL_PATTERN = re.compile(
+    r"\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|replace|rename|merge|upsert|call|do|handler|load|lock|unlock|analyze|optimize|repair)\b",
+    re.IGNORECASE,
+)
+DB_FORBIDDEN_SQL_FRAGMENT_PATTERN = re.compile(
+    r"\binto\s+(outfile|dumpfile)\b|\bload\s+data\b",
+    re.IGNORECASE,
+)
+DB_LOCKING_READ_PATTERN = re.compile(
+    r"\bfor\s+update\b|\block\s+in\s+share\s+mode\b",
     re.IGNORECASE,
 )
 S3_LOG_DATE_TOKEN_PATTERN = re.compile(r"^20\d{2}-\d{2}-\d{2}$")
@@ -424,7 +436,7 @@ def _is_barcode_video_count_request(question: str, barcode: str | None) -> bool:
 
 def _create_db_connection(timeout_sec: int | None = None) -> Any:
     actual_timeout = max(1, timeout_sec if timeout_sec is not None else DB_QUERY_TIMEOUT_SEC)
-    return pymysql.connect(
+    connection = pymysql.connect(
         host=BOX_DB_HOST,
         port=BOX_DB_PORT,
         user=BOX_DB_USERNAME,
@@ -437,6 +449,14 @@ def _create_db_connection(timeout_sec: int | None = None) -> Any:
         autocommit=True,
         cursorclass=pymysql.cursors.DictCursor,
     )
+    try:
+        with connection.cursor() as cursor:
+            # 앱 레벨 2차 안전장치: 세션 기본 트랜잭션을 read-only로 강제
+            cursor.execute("SET SESSION TRANSACTION READ ONLY")
+    except pymysql.MySQLError as exc:
+        connection.close()
+        raise RuntimeError("DB 세션을 read-only로 설정하지 못했어") from exc
+    return connection
 
 
 def _query_recordings_count_by_barcode(barcode: str) -> str:
@@ -470,14 +490,14 @@ def _lookup_device_names_by_barcode(barcode: str) -> list[str]:
         (
             "SELECT DISTINCT d.deviceName AS deviceName "
             "FROM recordings r "
-            "JOIN devices d ON d.deviceSeq = r.deviceSeq AND d.hospitalSeq = r.hospitalSeq "
+            "JOIN devices d ON d.seq = r.deviceSeq AND d.hospitalSeq = r.hospitalSeq "
             "WHERE r.fullBarcode = %s AND COALESCE(d.deviceName, '') <> '' "
             "LIMIT %s"
         ),
         (
             "SELECT DISTINCT d.deviceName AS deviceName "
             "FROM recordings r "
-            "JOIN devices d ON d.deviceSeq = r.deviceSeq "
+            "JOIN devices d ON d.seq = r.deviceSeq "
             "WHERE r.fullBarcode = %s AND COALESCE(d.deviceName, '') <> '' "
             "LIMIT %s"
         ),
@@ -979,11 +999,19 @@ def _validate_readonly_sql(raw_sql: str) -> str:
     if ";" in sql:
         raise ValueError("한 번에 한 쿼리만 실행할 수 있어")
 
+    # 주석 문법은 우회 경로가 될 수 있어 차단
+    if any(token in sql for token in ("--", "/*", "*/", "#")):
+        raise ValueError("SQL 주석 문법은 허용하지 않아")
+
     lowered = sql.lower()
-    if not lowered.startswith(("select", "show", "describe", "desc", "explain", "with")):
+    if not DB_READONLY_SQL_HEAD_PATTERN.match(lowered):
         raise ValueError("읽기 전용 쿼리(SELECT/SHOW/DESCRIBE/EXPLAIN/WITH)만 허용해")
-    if DB_WRITE_SQL_PATTERN.search(sql):
+    if DB_FORBIDDEN_SQL_PATTERN.search(lowered):
         raise ValueError("쓰기/변경 쿼리는 허용하지 않아")
+    if DB_FORBIDDEN_SQL_FRAGMENT_PATTERN.search(lowered):
+        raise ValueError("파일 입출력/적재 쿼리는 허용하지 않아")
+    if DB_LOCKING_READ_PATTERN.search(lowered):
+        raise ValueError("잠금 조회(SELECT ... FOR UPDATE)는 허용하지 않아")
 
     return sql
 

@@ -190,6 +190,85 @@ S3 조회 변수:
 python app.py
 ```
 
+## EC2 설치/실행 (Private Subnet + Session Manager)
+
+새 EC2에서 SSH 없이 Session Manager로 설치/운영하는 기준 절차입니다.
+
+1. EC2 준비
+
+- 인스턴스 생성 (Amazon Linux 2023 권장)
+- Private Subnet에 배치
+- IAM Role 연결: `AmazonSSMManagedInstanceCore` 포함
+- Session Manager 접속 확인:
+
+```bash
+aws ssm start-session --target <instance-id> --region ap-northeast-2
+```
+
+2. 서버 패키지 설치 및 코드 배치 (인스턴스 셸에서)
+
+```bash
+sudo dnf install -y git python3.11 python3.11-pip
+cd /home/ec2-user
+git clone https://github.com/firstquarter-J/rag-bot.git
+cd rag-bot
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+3. 환경변수 설정
+
+```bash
+cp .env.example .env
+vi .env
+chmod 600 .env
+```
+
+- `.env.example`에는 키만 있고 실제 값은 넣지 않음
+- 실제 비밀값은 `.env`(로컬/EC2)에서만 관리
+
+4. systemd 서비스 등록
+
+```bash
+sudo tee /etc/systemd/system/boxer.service > /dev/null <<'EOF'
+[Unit]
+Description=Boxer Slack Router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user/rag-bot
+EnvironmentFile=/home/ec2-user/rag-bot/.env
+ExecStart=/home/ec2-user/rag-bot/.venv/bin/python /home/ec2-user/rag-bot/app.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable boxer
+sudo systemctl restart boxer
+sudo systemctl status boxer --no-pager -l
+```
+
+5. 서비스 점검
+
+```bash
+sudo systemctl is-active boxer
+sudo journalctl -u boxer -f -o short-iso
+```
+
+문제 해결 포인트:
+
+- `TypeError: ... str | None` 오류가 나면 Python 3.9로 실행된 상태임
+- 반드시 `python3.11` 기반 `.venv`로 재생성 후 서비스 재시작
+
 ## Slack 사용 예시
 
 - Ping
