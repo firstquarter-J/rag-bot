@@ -66,6 +66,7 @@ S3_LOG_TAIL_LINES = int(os.getenv("S3_LOG_TAIL_LINES", "80"))
 LOG_ANALYSIS_MAX_DEVICES = int(os.getenv("LOG_ANALYSIS_MAX_DEVICES", "8"))
 LOG_ANALYSIS_MAX_SAMPLES = int(os.getenv("LOG_ANALYSIS_MAX_SAMPLES", "5"))
 LOG_SCAN_MAX_EVENTS = int(os.getenv("LOG_SCAN_MAX_EVENTS", "50"))
+LOG_SESSION_SAFETY_LINES = int(os.getenv("LOG_SESSION_SAFETY_LINES", "20"))
 DEFAULT_DB_QUERY = "SELECT NOW() AS now_time, DATABASE() AS db_name"
 BARCODE_PATTERN = re.compile(r"(?<!\d)(\d{11})(?!\d)")
 DB_READONLY_SQL_HEAD_PATTERN = re.compile(
@@ -129,7 +130,7 @@ SCAN_FOCUSED_HINTS = (
     "scan",
     "타임라인",
 )
-SCANNED_TOKEN_PATTERN = re.compile(r"Scanned:\s*([^\s]+)", re.IGNORECASE)
+SCANNED_TOKEN_PATTERN = re.compile(r"Scanned\s*:\s*([^\s]+)", re.IGNORECASE)
 LOG_LINE_TIME_PATTERN = re.compile(r"\b(\d{2}:\d{2}:\d{2})\b")
 SCAN_CODE_LABELS: dict[str, str] = {
     "C_STOPSESS": "녹화 중지",
@@ -540,6 +541,7 @@ def _fetch_s3_device_log_lines(
     s3_client: Any,
     device_name: str,
     log_date: str,
+    tail_only: bool = True,
 ) -> dict[str, Any]:
     key = f"{device_name}/log-{log_date}.log"
     try:
@@ -558,7 +560,7 @@ def _fetch_s3_device_log_lines(
 
     content_length = int(head_response.get("ContentLength") or 0)
     tail_bytes = max(1024, S3_LOG_TAIL_BYTES)
-    use_range = content_length > tail_bytes
+    use_range = tail_only and content_length > tail_bytes
     get_params: dict[str, Any] = {
         "Bucket": S3_LOG_BUCKET,
         "Key": key,
@@ -623,16 +625,90 @@ def _parse_scanned_event(line: str) -> tuple[str, str] | None:
     return token, f"기타 스캔 ({token})"
 
 
-def _extract_scan_events(lines: list[str]) -> list[tuple[str, str, str]]:
-    events: list[tuple[str, str, str]] = []
-    for line in lines:
+def _extract_scan_events_with_line_no(lines: list[str]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for line_no, line in enumerate(lines, start=1):
         parsed = _parse_scanned_event(line)
         if not parsed:
             continue
         token, label = parsed
         time_label = _extract_time_label_from_line(line)
-        events.append((time_label, label, token))
+        events.append(
+            {
+                "line_no": line_no,
+                "time_label": time_label,
+                "label": label,
+                "token": token,
+            }
+        )
     return events
+
+
+def _extract_recording_sessions(
+    lines: list[str],
+    barcode: str,
+    safety_lines: int,
+) -> list[dict[str, Any]]:
+    if not barcode:
+        return []
+
+    sessions: list[dict[str, Any]] = []
+    active: dict[str, Any] | None = None
+    normalized_barcode = barcode.strip()
+    safe_extra = max(0, min(500, safety_lines))
+
+    for event in _extract_scan_events_with_line_no(lines):
+        token = str(event["token"])
+        line_no = int(event["line_no"])
+        time_label = str(event["time_label"])
+        upper_token = token.upper()
+
+        if token == normalized_barcode:
+            if active is not None:
+                # stop barcode가 누락된 이전 세션은 다음 시작 직전까지로 본다.
+                active["end_line_no"] = max(int(active["start_line_no"]), line_no - 1)
+                sessions.append(active)
+            active = {
+                "start_line_no": line_no,
+                "start_time_label": time_label,
+                "stop_line_no": None,
+                "stop_time_label": None,
+                "end_line_no": len(lines),
+            }
+            continue
+
+        if upper_token == "C_STOPSESS" and active is not None:
+            active["stop_line_no"] = line_no
+            active["stop_time_label"] = time_label
+            active["end_line_no"] = min(len(lines), line_no + safe_extra)
+            sessions.append(active)
+            active = None
+
+    if active is not None:
+        active["end_line_no"] = len(lines)
+        sessions.append(active)
+
+    return sessions
+
+
+def _events_in_session(
+    events: list[dict[str, Any]],
+    session: dict[str, Any],
+) -> list[dict[str, Any]]:
+    start_line_no = int(session["start_line_no"])
+    end_line_no = int(session["end_line_no"])
+    return [
+        event
+        for event in events
+        if start_line_no <= int(event["line_no"]) <= end_line_no
+    ]
+
+
+def _line_in_any_session(line_no: int, sessions: list[dict[str, Any]]) -> bool:
+    for session in sessions:
+        if int(session["start_line_no"]) <= line_no <= int(session["end_line_no"]):
+            return True
+    return False
 
 
 def _analyze_barcode_log_scan_events(s3_client: Any, barcode: str, log_date: str) -> str:
@@ -648,7 +724,9 @@ def _analyze_barcode_log_scan_events(s3_client: Any, barcode: str, log_date: str
     max_devices = max(1, min(20, LOG_ANALYSIS_MAX_DEVICES))
     target_devices = device_names[:max_devices]
     omitted_device_count = max(0, len(device_names) - len(target_devices))
-    total_events = 0
+    total_session_count = 0
+    found_log_files = 0
+    devices_with_session = 0
 
     lines = [
         "*바코드 로그 스캔 분석 결과*",
@@ -663,7 +741,12 @@ def _analyze_barcode_log_scan_events(s3_client: Any, barcode: str, log_date: str
 
     event_limit = max(1, min(200, LOG_SCAN_MAX_EVENTS))
     for device_name in target_devices:
-        log_data = _fetch_s3_device_log_lines(s3_client, device_name, log_date)
+        log_data = _fetch_s3_device_log_lines(
+            s3_client,
+            device_name,
+            log_date,
+            tail_only=False,
+        )
         lines.append("")
         lines.append(f"*장비 `{device_name}`*")
 
@@ -671,36 +754,67 @@ def _analyze_barcode_log_scan_events(s3_client: Any, barcode: str, log_date: str
             lines.append(f"• 로그 파일 없음: `{log_data['key']}`")
             continue
 
+        found_log_files += 1
         source_lines = log_data["lines"]
-        max_lines = max(1, min(500, S3_LOG_TAIL_LINES))
-        if len(source_lines) > max_lines:
-            source_lines = source_lines[-max_lines:]
-
-        events = _extract_scan_events(source_lines)
-        total_events += len(events)
+        events = _extract_scan_events_with_line_no(source_lines)
+        sessions = _extract_recording_sessions(
+            source_lines,
+            barcode,
+            LOG_SESSION_SAFETY_LINES,
+        )
+        session_count = len(sessions)
+        total_session_count += session_count
 
         lines.append(f"• 파일: `{log_data['key']}`")
-        lines.append(f"• 분석 범위: 최근 `{len(source_lines)}줄`")
-        lines.append(f"• 스캔 이벤트: *{len(events)}건*")
+        lines.append(f"• 분석 범위: 전체 `{len(source_lines)}줄`")
+        lines.append(f"• 요청 바코드 녹화 세션: *{session_count}건*")
 
-        if not events:
+        if session_count == 0:
+            lines.append("• 결과: 요청 바코드로 시작된 녹화 세션이 없어")
+            continue
+
+        devices_with_session += 1
+        last_session = sessions[-1]
+        start_time_label = _display_value(last_session.get("start_time_label"), default="시간미상")
+        stop_time_label = _display_value(last_session.get("stop_time_label"), default="미확인")
+        lines.append(f"• 마지막 세션 시작: `{start_time_label}`")
+        lines.append(f"• 마지막 세션 종료: `{stop_time_label}`")
+        lines.append(
+            f"• 세션 기준: `C_STOPSESS` 이후 `{max(0, LOG_SESSION_SAFETY_LINES)}줄` 포함"
+        )
+
+        session_events = _events_in_session(events, last_session)
+        lines.append(f"• 마지막 세션 스캔 이벤트: *{len(session_events)}건*")
+
+        if not session_events:
             lines.append("• 타임라인: 없음")
             continue
 
-        display_events = events[-event_limit:]
-        if len(events) > len(display_events):
+        display_events = session_events[-event_limit:]
+        if len(session_events) > len(display_events):
             lines.append(
                 f"• 참고: 이벤트가 많아서 최근 `{len(display_events)}건`만 표시해"
             )
-        for time_label, label, token in display_events:
+        for event in display_events:
+            time_label = _display_value(event.get("time_label"), default="시간미상")
+            label = _display_value(event.get("label"), default="기타 스캔")
+            token = _display_value(event.get("token"), default="unknown")
             lines.append(f"- {time_label}: {label} (`{token}`)")
 
+    if total_session_count == 0:
+        return (
+            "*바코드 로그 스캔 분석 결과*\n"
+            f"• 바코드: `{barcode}`\n"
+            f"• 날짜: `{log_date}`\n"
+            f"• 매핑 장비: `{len(device_names)}개`\n"
+            f"• 확인한 로그 파일: `{found_log_files}개`\n"
+            f"*요약*: 요청 바코드 `{barcode}`로 시작된 녹화 세션이 없어 오늘 촬영된 기록이 없어"
+        )
+
     lines.append("")
-    if total_events > 0:
-        lines.append(f"*요약*: 분석 범위에서 스캔 이벤트 `{total_events}건`을 찾았어")
-    else:
-        lines.append("*요약*: 분석 범위에서 스캔 이벤트를 찾지 못했어")
-    lines.append("※ 현재는 로그 tail(최근 구간) 기준 분석이야")
+    lines.append(f"• 요청 바코드 세션이 확인된 장비: `{devices_with_session}개`")
+    lines.append(f"*요약*: 분석 범위에서 요청 바코드 녹화 세션 `{total_session_count}건`을 찾았어")
+    lines.append("※ 세션 규칙: 바코드 스캔 시작 ~ C_STOPSESS + 안전 라인")
 
     return _truncate_text("\n".join(lines), S3_QUERY_MAX_RESULT_CHARS)
 
@@ -720,6 +834,9 @@ def _analyze_barcode_log_errors(s3_client: Any, barcode: str, log_date: str) -> 
     omitted_device_count = max(0, len(device_names) - len(target_devices))
 
     total_error_lines = 0
+    found_log_files = 0
+    total_session_count = 0
+    devices_with_session = 0
     lines = [
         "*바코드 로그 에러 분석 결과*",
         f"• 바코드: `{barcode}`",
@@ -732,7 +849,12 @@ def _analyze_barcode_log_errors(s3_client: Any, barcode: str, log_date: str) -> 
         )
 
     for device_name in target_devices:
-        log_data = _fetch_s3_device_log_lines(s3_client, device_name, log_date)
+        log_data = _fetch_s3_device_log_lines(
+            s3_client,
+            device_name,
+            log_date,
+            tail_only=False,
+        )
         lines.append("")
         lines.append(f"*장비 `{device_name}`*")
 
@@ -740,36 +862,66 @@ def _analyze_barcode_log_errors(s3_client: Any, barcode: str, log_date: str) -> 
             lines.append(f"• 로그 파일 없음: `{log_data['key']}`")
             continue
 
+        found_log_files += 1
         source_lines = log_data["lines"]
-        max_lines = max(1, min(500, S3_LOG_TAIL_LINES))
-        if len(source_lines) > max_lines:
-            source_lines = source_lines[-max_lines:]
-
+        sessions = _extract_recording_sessions(
+            source_lines,
+            barcode,
+            LOG_SESSION_SAFETY_LINES,
+        )
+        session_count = len(sessions)
+        total_session_count += session_count
         error_lines = _find_error_lines(source_lines)
-        total_error_lines += len(error_lines)
+        session_error_lines = [
+            (line_no, content)
+            for (line_no, content) in error_lines
+            if _line_in_any_session(line_no, sessions)
+        ]
 
         lines.append(f"• 파일: `{log_data['key']}`")
         lines.append(f"• 파일 크기: `{_format_size(log_data['content_length'])}`")
-        lines.append(f"• 분석 범위: 최근 `{len(source_lines)}줄`")
-        lines.append(f"• 에러 패턴 라인 수: *{len(error_lines)}줄*")
+        lines.append(f"• 분석 범위: 전체 `{len(source_lines)}줄`")
+        lines.append(f"• 요청 바코드 녹화 세션: *{session_count}건*")
 
-        if not error_lines:
+        if session_count == 0:
+            lines.append("• 결과: 요청 바코드로 시작된 녹화 세션이 없어")
+            continue
+
+        devices_with_session += 1
+        total_error_lines += len(session_error_lines)
+        lines.append(f"• 세션 구간 에러 패턴 라인 수: *{len(session_error_lines)}줄*")
+
+        if not session_error_lines:
             lines.append("• 샘플: 없음")
             continue
 
         sample_count = max(1, min(10, LOG_ANALYSIS_MAX_SAMPLES))
-        for index, (line_no, content) in enumerate(error_lines[-sample_count:], start=1):
+        for index, (line_no, content) in enumerate(
+            session_error_lines[-sample_count:],
+            start=1,
+        ):
             sample = content.strip()
             if len(sample) > 220:
                 sample = sample[:220] + "...(truncated)"
             lines.append(f"{index}. [{line_no}] {sample}")
 
+    if total_session_count == 0:
+        return (
+            "*바코드 로그 에러 분석 결과*\n"
+            f"• 바코드: `{barcode}`\n"
+            f"• 날짜: `{log_date}`\n"
+            f"• 매핑 장비: `{len(device_names)}개`\n"
+            f"• 확인한 로그 파일: `{found_log_files}개`\n"
+            f"*요약*: 요청 바코드 `{barcode}`로 시작된 녹화 세션이 없어 오늘 촬영된 기록이 없어"
+        )
+
     lines.append("")
+    lines.append(f"• 요청 바코드 세션이 확인된 장비: `{devices_with_session}개`")
     if total_error_lines > 0:
-        lines.append(f"*요약*: 분석 범위에서 에러 패턴 라인 `{total_error_lines}줄`을 찾았어")
+        lines.append(f"*요약*: 세션 구간에서 에러 패턴 라인 `{total_error_lines}줄`을 찾았어")
     else:
-        lines.append("*요약*: 분석 범위에서 에러 패턴 라인을 찾지 못했어")
-    lines.append("※ 현재는 로그 tail(최근 구간) 기준 분석이야")
+        lines.append("*요약*: 세션 구간에서 에러 패턴 라인을 찾지 못했어")
+    lines.append("※ 세션 규칙: 바코드 스캔 시작 ~ C_STOPSESS + 안전 라인")
 
     return _truncate_text("\n".join(lines), S3_QUERY_MAX_RESULT_CHARS)
 

@@ -62,3 +62,9 @@ Resolve: #1
 - `recordings.deviceSeq` 조인 시 `devices.deviceSeq`가 아니라 `devices.seq`를 사용
 - 공통 규칙: FK 이름이 `xxxSeq`여도 참조 대상 테이블 PK는 대체로 `seq`
 - 예: `recordings.deviceSeq -> devices.seq`, `recordingSeq -> recordings.seq`
+
+## Log Session Rule
+
+- 녹화 시작: `Scanned : <11자리 바코드>`
+- 녹화 종료: `Scanned : C_STOPSESS`
+- 세션 범위: 시작 라인부터 종료 라인 + `20줄`(안전 구간)까지
