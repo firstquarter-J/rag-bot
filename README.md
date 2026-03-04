@@ -94,6 +94,8 @@
   - 바코드를 `recordings.fullBarcode`로 조회해 row 수(`COUNT(*)`) 응답
 - 바코드 + 마지막 녹화 날짜 자연어 요청 지원:
   - 바코드를 `recordings.fullBarcode`로 조회해 `MAX(recordedAt)` 응답
+- 바코드 + 전체 녹화 날짜 자연어 요청 지원:
+  - 바코드를 `recordings.fullBarcode`로 조회해 `recordedAt`의 KST 날짜 목록 응답
 - 바코드 + 특정 날짜 녹화 여부 자연어 요청 지원:
   - 바코드 + 날짜(`오늘/어제/YYYY-MM-DD`)를 `recordings.recordedAt` 범위 조건으로 조회
   - 날짜 해석은 KST(`Asia/Seoul`) 기준, DB 조회는 UTC 범위(`>= start_utc`, `< end_utc`)로 변환
@@ -232,6 +234,7 @@ DB 조회 변수:
 - `DB_QUERY_ENABLED=true`
 - `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`
 - `DB_QUERY_TIMEOUT_SEC`, `DB_QUERY_MAX_ROWS`, `DB_QUERY_MAX_SQL_CHARS`, `DB_QUERY_MAX_RESULT_CHARS`
+- `RECORDINGS_CONTEXT_LIMIT` (바코드 기준 recordings 기본 컨텍스트 로드 개수, 기본 `30`)
 - 하위호환: company 어댑터 사용 시 `BOX_DB_*`를 `DB_*`로 매핑하는 레거시 호환이 동작
 
 S3 조회 변수:

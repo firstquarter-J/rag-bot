@@ -18,6 +18,7 @@ from boxer.routers.company.barcode_log import (
     _analyze_barcode_log_errors,
     _analyze_barcode_log_scan_events,
     _extract_log_date,
+    _is_barcode_all_recorded_dates_request,
     _is_barcode_log_analysis_request,
     _is_barcode_last_recorded_at_request,
     _is_barcode_video_recorded_on_date_request,
@@ -27,6 +28,8 @@ from boxer.routers.company.barcode_log import (
 )
 from boxer.routers.company.db_query import _extract_db_query, _format_db_query_result
 from boxer.routers.company.box_db import (
+    _load_recordings_context_by_barcode,
+    _query_all_recorded_dates_by_barcode,
     _query_last_recorded_at_by_barcode,
     _query_recordings_count_by_barcode,
     _query_recordings_on_date_by_barcode,
@@ -116,6 +119,15 @@ def create_app() -> App:
 
         db_query = _extract_db_query(question)
         barcode = _extract_barcode(question)
+        recordings_context: dict[str, Any] | None = None
+
+        def _get_recordings_context() -> dict[str, Any]:
+            nonlocal recordings_context
+            if recordings_context is None:
+                if not barcode:
+                    raise ValueError("바코드가 필요해")
+                recordings_context = _load_recordings_context_by_barcode(barcode)
+            return recordings_context
 
         if _is_barcode_log_analysis_request(question, barcode):
             if not s.S3_QUERY_ENABLED:
@@ -138,12 +150,14 @@ def create_app() -> App:
                         _get_s3_client(),
                         barcode or "",
                         log_date,
+                        recordings_context=_get_recordings_context(),
                     )
                 else:
                     result_text = _analyze_barcode_log_scan_events(
                         _get_s3_client(),
                         barcode or "",
                         log_date,
+                        recordings_context=_get_recordings_context(),
                     )
                 reply(result_text)
                 logger.info(
@@ -155,7 +169,7 @@ def create_app() -> App:
                 )
             except ValueError as exc:
                 reply(f"로그 분석 요청 형식 오류: {exc}")
-            except (BotoCoreError, ClientError, pymysql.MySQLError):
+            except (BotoCoreError, ClientError, pymysql.MySQLError, RuntimeError):
                 logger.exception("Barcode log analysis failed")
                 reply("바코드 로그 분석 중 오류가 발생했어. DB 연결/S3 권한/로그 경로를 확인해줘")
             except Exception:
@@ -165,7 +179,10 @@ def create_app() -> App:
 
         if _is_barcode_video_count_request(question, barcode):
             try:
-                count_result = _query_recordings_count_by_barcode(barcode or "")
+                count_result = _query_recordings_count_by_barcode(
+                    barcode or "",
+                    recordings_context=_get_recordings_context(),
+                )
                 reply(count_result)
                 logger.info(
                     "Responded with barcode video count in thread_ts=%s barcode=%s",
@@ -180,9 +197,32 @@ def create_app() -> App:
                 reply("영상 개수 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
             return
 
+        if _is_barcode_all_recorded_dates_request(question, barcode):
+            try:
+                result_text = _query_all_recorded_dates_by_barcode(
+                    barcode or "",
+                    recordings_context=_get_recordings_context(),
+                )
+                reply(result_text)
+                logger.info(
+                    "Responded with barcode all recorded dates in thread_ts=%s barcode=%s",
+                    thread_ts,
+                    barcode,
+                )
+            except (pymysql.MySQLError, RuntimeError):
+                logger.exception("Barcode all recorded dates query failed")
+                reply("전체 녹화 날짜 조회 중 오류가 발생했어. DB 연결 정보와 네트워크 상태를 확인해줘")
+            except Exception:
+                logger.exception("Barcode all recorded dates query failed")
+                reply("전체 녹화 날짜 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
+            return
+
         if _is_barcode_last_recorded_at_request(question, barcode):
             try:
-                result_text = _query_last_recorded_at_by_barcode(barcode or "")
+                result_text = _query_last_recorded_at_by_barcode(
+                    barcode or "",
+                    recordings_context=_get_recordings_context(),
+                )
                 reply(result_text)
                 logger.info(
                     "Responded with barcode last recordedAt in thread_ts=%s barcode=%s",
@@ -200,7 +240,11 @@ def create_app() -> App:
         if _is_barcode_video_recorded_on_date_request(question, barcode):
             try:
                 target_date = _extract_log_date(question)
-                result_text = _query_recordings_on_date_by_barcode(barcode or "", target_date)
+                result_text = _query_recordings_on_date_by_barcode(
+                    barcode or "",
+                    target_date,
+                    recordings_context=_get_recordings_context(),
+                )
                 reply(result_text)
                 logger.info(
                     "Responded with barcode recordedAt-on-date in thread_ts=%s barcode=%s date=%s",

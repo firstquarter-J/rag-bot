@@ -127,6 +127,37 @@ def _is_barcode_video_recorded_on_date_request(question: str, barcode: str | Non
     return True
 
 
+def _is_barcode_all_recorded_dates_request(question: str, barcode: str | None) -> bool:
+    if not barcode:
+        return False
+    if _is_barcode_last_recorded_at_request(question, barcode):
+        return False
+    if _is_barcode_video_recorded_on_date_request(question, barcode):
+        return False
+    if _is_barcode_video_count_request(question, barcode):
+        return False
+
+    text = (question or "").strip()
+    lowered = text.lower()
+
+    if "로그" in text or re.search(r"\blog\b", lowered):
+        return False
+
+    has_video_hint = any(token in text for token in cs.VIDEO_HINT_TOKENS) or any(
+        token in lowered for token in cs.VIDEO_HINT_TOKENS
+    ) or any(token in text for token in ("녹화", "촬영", "recordedAt"))
+    if not has_video_hint:
+        return False
+
+    has_all_hint = any(token in text for token in ("모든", "전체", "전부", "다")) or any(
+        token in lowered for token in ("all", "entire")
+    )
+    has_date_hint = any(token in text for token in ("날짜", "일자", "목록", "리스트")) or any(
+        token in lowered for token in ("date", "dates", "list")
+    )
+    return has_all_hint and has_date_hint
+
+
 def _find_error_lines(lines: list[str]) -> list[tuple[int, str]]:
     matches: list[tuple[int, str]] = []
     for line_no, line in enumerate(lines, start=1):
@@ -248,8 +279,16 @@ def _line_in_any_session(line_no: int, sessions: list[dict[str, Any]]) -> bool:
     return False
 
 
-def _analyze_barcode_log_scan_events(s3_client: Any, barcode: str, log_date: str) -> str:
-    device_names = _lookup_device_names_by_barcode(barcode)
+def _analyze_barcode_log_scan_events(
+    s3_client: Any,
+    barcode: str,
+    log_date: str,
+    recordings_context: dict[str, Any] | None = None,
+) -> str:
+    device_names = _lookup_device_names_by_barcode(
+        barcode,
+        recordings_context=recordings_context,
+    )
     if not device_names:
         return (
             "*바코드 로그 스캔 분석 결과*\n"
@@ -353,8 +392,16 @@ def _analyze_barcode_log_scan_events(s3_client: Any, barcode: str, log_date: str
     return _truncate_text("\n".join(lines), s.S3_QUERY_MAX_RESULT_CHARS)
 
 
-def _analyze_barcode_log_errors(s3_client: Any, barcode: str, log_date: str) -> str:
-    device_names = _lookup_device_names_by_barcode(barcode)
+def _analyze_barcode_log_errors(
+    s3_client: Any,
+    barcode: str,
+    log_date: str,
+    recordings_context: dict[str, Any] | None = None,
+) -> str:
+    device_names = _lookup_device_names_by_barcode(
+        barcode,
+        recordings_context=recordings_context,
+    )
     if not device_names:
         return (
             "*바코드 로그 에러 분석 결과*\n"
