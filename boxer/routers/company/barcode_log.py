@@ -491,17 +491,6 @@ def _events_in_sessions(events: list[dict[str, Any]], sessions: list[dict[str, A
     ]
 
 
-def _filter_scan_events_for_barcode(events: list[dict[str, Any]], barcode: str) -> list[dict[str, Any]]:
-    normalized_barcode = (barcode or "").strip()
-    filtered: list[dict[str, Any]] = []
-    for event in events:
-        token = str(event.get("token") or "")
-        if re.fullmatch(r"\d{11}", token) and token != normalized_barcode:
-            continue
-        filtered.append(event)
-    return filtered
-
-
 def _error_lines_in_sessions(
     error_lines: list[tuple[int, str]],
     sessions: list[dict[str, Any]],
@@ -513,6 +502,31 @@ def _error_lines_in_sessions(
         for (line_no, content) in error_lines
         if _line_in_any_session(line_no, sessions)
     ]
+
+
+def _normalize_error_line_for_dedupe(content: str) -> str:
+    normalized = " ".join((content or "").strip().split())
+    normalized = re.sub(
+        r"^\d{4}-\d{2}-\d{2}[_\sT]\d{2}:\d{2}:\d{2}(?:\.\d+)?\s*",
+        "",
+        normalized,
+    )
+    normalized = re.sub(r"^\[?\d{2}:\d{2}:\d{2}(?:\.\d+)?\]?\s*", "", normalized)
+    return normalized.lower()
+
+
+def _dedupe_error_lines(error_lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    deduped: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for line_no, content in error_lines:
+        key = _normalize_error_line_for_dedupe(content)
+        if not key:
+            key = f"line:{line_no}:{content.strip()}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((line_no, content))
+    return deduped
 
 
 def _append_session_summaries(
@@ -536,10 +550,7 @@ def _append_session_summaries(
     for index, session in enumerate(display_sessions, start=start_index):
         start_time = _display_value(session.get("start_time_label"), default="시간미상")
         stop_time = _display_value(session.get("stop_time_label"), default="미확인")
-        session_scan_events = _filter_scan_events_for_barcode(
-            _events_in_session(scan_events, session),
-            barcode,
-        )
+        session_scan_events = _events_in_session(scan_events, session)
         session_motion_events = _events_in_session(motion_events, session)
         motion_summary = _summarize_motion_session(session_motion_events)
 
@@ -648,22 +659,34 @@ def _append_scan_events_section(lines: list[str], events: list[dict[str, Any]]) 
         lines.append(f"- {time_label}: {label} (`{token}`)")
 
 
-def _append_error_lines_section(lines: list[str], error_lines: list[tuple[int, str]]) -> None:
-    lines.append(f"• error 라인: *{len(error_lines)}줄*")
+def _append_error_lines_section(
+    lines: list[str],
+    error_lines: list[tuple[int, str]],
+    *,
+    show_all: bool = False,
+    deduplicated: bool = False,
+) -> None:
+    label = "• error 라인"
+    if deduplicated:
+        label = "• error 라인(중복 제거)"
+    lines.append(f"{label}: *{len(error_lines)}줄*")
     if not error_lines:
         lines.append("- 없음")
         return
 
-    sample_limit = max(1, min(50, cs.LOG_ANALYSIS_MAX_SAMPLES * 5))
-    display_error_lines = error_lines[-sample_limit:]
-    if len(error_lines) > len(display_error_lines):
-        lines.append(f"• 참고: error 라인이 많아서 최근 `{len(display_error_lines)}줄`만 표시해")
+    display_error_lines = error_lines
+    if not show_all:
+        sample_limit = max(1, min(50, cs.LOG_ANALYSIS_MAX_SAMPLES * 5))
+        display_error_lines = error_lines[-sample_limit:]
+        if len(error_lines) > len(display_error_lines):
+            lines.append(f"• 참고: error 라인이 많아서 최근 `{len(display_error_lines)}줄`만 표시해")
 
     for line_no, content in display_error_lines:
+        time_label = _extract_time_label_from_line(content)
         sample = content.strip()
         if len(sample) > 220:
             sample = sample[:220] + "...(truncated)"
-        lines.append(f"- [{line_no}] {sample}")
+        lines.append(f"- {time_label}: [{line_no}] {sample}")
 
 
 def _analyze_barcode_log_phase1_window(
@@ -765,11 +788,12 @@ def _analyze_barcode_log_phase1_window(
                 for event in events
                 if _line_in_any_session(int(event["line_no"]), sessions)
             ]
-            session_error_lines = [
+            raw_session_error_lines = [
                 (line_no, content)
                 for (line_no, content) in error_lines
                 if _line_in_any_session(line_no, sessions)
             ]
+            session_error_lines = _dedupe_error_lines(raw_session_error_lines)
 
             hospital_name = _display_value(device_context.get("hospitalName"), default="미확인")
             room_name = _display_value(device_context.get("roomName"), default="미확인")
@@ -780,7 +804,16 @@ def _analyze_barcode_log_phase1_window(
             lines.append(f"• 병실: `{room_name}`")
             lines.append(f"• 요청 바코드 녹화 세션: *{len(sessions)}건*")
             _append_scan_events_section(lines, session_events)
-            _append_error_lines_section(lines, session_error_lines)
+            if len(raw_session_error_lines) != len(session_error_lines):
+                lines.append(
+                    f"• 세션 error 중복 제거: `{len(raw_session_error_lines)} -> {len(session_error_lines)}`"
+                )
+            _append_error_lines_section(
+                lines,
+                session_error_lines,
+                show_all=True,
+                deduplicated=True,
+            )
 
     if found_log_files == 0:
         return (
@@ -801,7 +834,7 @@ def _analyze_barcode_log_phase1_window(
         lines.append("• 요청 바코드 세션이 확인된 로그 범위: `0개`")
         lines.append("*요약*: 범위 내 로그는 확인했지만 요청 바코드 세션은 찾지 못했어")
 
-    max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 25000)
+    max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 38000)
     return _truncate_text("\n".join(lines), max_result_chars)
 
 
@@ -874,11 +907,9 @@ def _analyze_barcode_log_scan_events(
         )
         session_count = len(sessions)
         total_session_count += session_count
-        session_scoped_events = _filter_scan_events_for_barcode(
-            _events_in_sessions(events, sessions),
-            barcode,
-        )
-        session_error_lines = _error_lines_in_sessions(error_lines, sessions)
+        session_scoped_events = _events_in_sessions(events, sessions)
+        raw_session_error_lines = _error_lines_in_sessions(error_lines, sessions)
+        session_error_lines = _dedupe_error_lines(raw_session_error_lines)
 
         hospital_name = _display_value(device_context.get("hospitalName"), default="미확인")
         room_name = _display_value(device_context.get("roomName"), default="미확인")
@@ -889,7 +920,16 @@ def _analyze_barcode_log_scan_events(
         lines.append(f"• 날짜: `{log_date}`")
         lines.append(f"• 분석 범위: 전체 `{len(source_lines)}줄`")
         _append_scan_events_section(lines, session_scoped_events)
-        _append_error_lines_section(lines, session_error_lines)
+        if len(raw_session_error_lines) != len(session_error_lines):
+            lines.append(
+                f"• 세션 error 중복 제거: `{len(raw_session_error_lines)} -> {len(session_error_lines)}`"
+            )
+        _append_error_lines_section(
+            lines,
+            session_error_lines,
+            show_all=True,
+            deduplicated=True,
+        )
         lines.append(f"• 요청 바코드 녹화 세션: *{session_count}건*")
 
         if session_count == 0:
@@ -921,7 +961,7 @@ def _analyze_barcode_log_scan_events(
         lines.append(f"*요약*: 로그 파일은 확인했지만 요청 바코드 `{barcode}` 세션은 찾지 못했어")
     lines.append("※ 세션 규칙: 바코드 스캔 시작 ~ C_STOPSESS + 안전 라인")
 
-    max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 20000)
+    max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 38000)
     return _truncate_text("\n".join(lines), max_result_chars)
 
 
@@ -951,7 +991,7 @@ def _analyze_barcode_log_errors(
     target_device_contexts = all_device_contexts[:max_devices]
     omitted_device_count = max(0, len(all_device_contexts) - len(target_device_contexts))
 
-    total_error_lines = 0
+    total_session_error_lines = 0
     found_log_files = 0
     total_session_count = 0
     devices_with_session = 0
@@ -995,12 +1035,10 @@ def _analyze_barcode_log_errors(
         session_count = len(sessions)
         total_session_count += session_count
         error_lines = _find_error_lines(source_lines)
-        total_error_lines += len(error_lines)
-        session_scoped_events = _filter_scan_events_for_barcode(
-            _events_in_sessions(events, sessions),
-            barcode,
-        )
-        session_error_lines = _error_lines_in_sessions(error_lines, sessions)
+        session_scoped_events = _events_in_sessions(events, sessions)
+        raw_session_error_lines = _error_lines_in_sessions(error_lines, sessions)
+        session_error_lines = _dedupe_error_lines(raw_session_error_lines)
+        total_session_error_lines += len(session_error_lines)
 
         hospital_name = _display_value(device_context.get("hospitalName"), default="미확인")
         room_name = _display_value(device_context.get("roomName"), default="미확인")
@@ -1012,7 +1050,16 @@ def _analyze_barcode_log_errors(
         lines.append(f"• 파일 크기: `{_format_size(log_data['content_length'])}`")
         lines.append(f"• 분석 범위: 전체 `{len(source_lines)}줄`")
         _append_scan_events_section(lines, session_scoped_events)
-        _append_error_lines_section(lines, session_error_lines)
+        if len(raw_session_error_lines) != len(session_error_lines):
+            lines.append(
+                f"• 세션 error 중복 제거: `{len(raw_session_error_lines)} -> {len(session_error_lines)}`"
+            )
+        _append_error_lines_section(
+            lines,
+            session_error_lines,
+            show_all=True,
+            deduplicated=True,
+        )
         lines.append(f"• 요청 바코드 녹화 세션: *{session_count}건*")
 
         if session_count == 0:
@@ -1025,17 +1072,6 @@ def _analyze_barcode_log_errors(
         )
         _append_session_summaries(lines, barcode, sessions, events, motion_events)
         lines.append(f"• 세션 구간 에러 패턴 라인 수: *{len(session_error_lines)}줄*")
-
-        if not session_error_lines:
-            lines.append("• 샘플: 없음")
-            continue
-
-        sample_count = max(1, min(10, cs.LOG_ANALYSIS_MAX_SAMPLES))
-        for index, (line_no, content) in enumerate(session_error_lines[-sample_count:], start=1):
-            sample = content.strip()
-            if len(sample) > 220:
-                sample = sample[:220] + "...(truncated)"
-            lines.append(f"{index}. [{line_no}] {sample}")
 
     if found_log_files == 0:
         return (
@@ -1050,12 +1086,12 @@ def _analyze_barcode_log_errors(
     lines.append("")
     lines.append(f"• 확인한 로그 파일: `{found_log_files}개`")
     lines.append(f"• 요청 바코드 세션이 확인된 장비: `{devices_with_session}개`")
-    lines.append(f"• 로그 전체 error 라인: `{total_error_lines}줄`")
-    if total_error_lines > 0:
-        lines.append("*요약*: 로그에서 error 패턴 라인을 확인했고 세션 구간 결과를 함께 표시했어")
+    lines.append(f"• 세션 구간 error 라인(중복 제거): `{total_session_error_lines}줄`")
+    if total_session_error_lines > 0:
+        lines.append("*요약*: 요청 바코드 세션 구간에서 error 패턴 라인을 확인했어")
     else:
-        lines.append("*요약*: 로그에서 error 패턴 라인을 찾지 못했어")
+        lines.append("*요약*: 요청 바코드 세션 구간에서 error 패턴 라인을 찾지 못했어")
     lines.append("※ 세션 규칙: 바코드 스캔 시작 ~ C_STOPSESS + 안전 라인")
 
-    max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 20000)
+    max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 38000)
     return _truncate_text("\n".join(lines), max_result_chars)
