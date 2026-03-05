@@ -16,9 +16,13 @@ from boxer.core.thread_context import _build_model_input, _load_thread_context
 from boxer.core.utils import _validate_tokens
 from boxer.routers.company.app_user import _lookup_app_user_by_barcode, _should_lookup_barcode
 from boxer.routers.company.barcode_log import (
+    _analyze_barcode_log_phase1_window,
     _analyze_barcode_log_errors,
     _analyze_barcode_log_scan_events,
+    _build_phase2_scope_request_message,
+    _extract_hospital_room_scope,
     _extract_log_date,
+    _extract_log_date_with_presence,
     _is_barcode_all_recorded_dates_request,
     _is_barcode_log_analysis_request,
     _is_barcode_last_recorded_at_request,
@@ -30,6 +34,7 @@ from boxer.routers.company.barcode_log import (
 from boxer.routers.company.db_query import _extract_db_query, _format_db_query_result
 from boxer.routers.company.box_db import (
     _load_recordings_context_by_barcode,
+    _lookup_device_contexts_by_hospital_room,
     _query_all_recorded_dates_by_barcode,
     _query_last_recorded_at_by_barcode,
     _query_recordings_count_by_barcode,
@@ -252,6 +257,10 @@ def create_app() -> App:
             evidence["recordingsHasMore"] = context.get("has_more")
             evidence["recordingsRows"] = _build_recordings_rows_evidence(context)
 
+        def _has_recordings_device_mapping(context: dict[str, Any]) -> bool:
+            rows = context.get("rows") or []
+            return any(row.get("deviceSeq") is not None for row in rows)
+
         def _build_barcode_fallback_evidence() -> dict[str, Any] | None:
             if not barcode:
                 return None
@@ -289,34 +298,109 @@ def create_app() -> App:
                 return
 
             try:
-                log_date = _extract_log_date(question)
-                analysis_mode = (
-                    "error"
-                    if _is_error_focused_request(question) and not _is_scan_focused_request(question)
-                    else "scan"
-                )
-                if analysis_mode == "error":
-                    result_text = _analyze_barcode_log_errors(
-                        _get_s3_client(),
-                        barcode or "",
-                        log_date,
-                        recordings_context=_get_recordings_context(),
-                    )
-                else:
-                    result_text = _analyze_barcode_log_scan_events(
-                        _get_s3_client(),
-                        barcode or "",
-                        log_date,
-                        recordings_context=_get_recordings_context(),
-                    )
+                log_date, has_requested_date = _extract_log_date_with_presence(question)
+                analysis_mode = "phase1_window"
                 context = _get_recordings_context()
+                summary = context.get("summary") or {}
+                recording_count = int(summary.get("recordingCount") or 0)
+                has_device_mapping = _has_recordings_device_mapping(context)
+                phase2_hospital_name, phase2_room_name = _extract_hospital_room_scope(question)
+                used_manual_scope = False
+
+                if has_requested_date:
+                    base_mode = (
+                        "error"
+                        if _is_error_focused_request(question) and not _is_scan_focused_request(question)
+                        else "scan"
+                    )
+
+                    if recording_count <= 0 or not has_device_mapping:
+                        if not phase2_hospital_name or not phase2_room_name:
+                            analysis_mode = "scope_required"
+                            result_text = _build_phase2_scope_request_message(
+                                barcode or "",
+                                "recordings 장비 매핑이 없어 2차 입력이 필요해",
+                                "*바코드 로그 분석 결과 (2차 수동 범위)*",
+                            )
+                        else:
+                            manual_device_contexts = _lookup_device_contexts_by_hospital_room(
+                                phase2_hospital_name,
+                                phase2_room_name,
+                            )
+                            if not manual_device_contexts:
+                                analysis_mode = "scope_not_found"
+                                result_text = _build_phase2_scope_request_message(
+                                    barcode or "",
+                                    "입력한 병원명/병실명으로 장비를 찾지 못했어. MDA 표시 이름과 정확히 일치하게 입력해줘",
+                                    "*바코드 로그 분석 결과 (2차 수동 범위)*",
+                                )
+                            else:
+                                used_manual_scope = True
+                                analysis_mode = f"{base_mode}_manual_scope"
+                                if base_mode == "error":
+                                    result_text = _analyze_barcode_log_errors(
+                                        _get_s3_client(),
+                                        barcode or "",
+                                        log_date,
+                                        recordings_context=context,
+                                        device_contexts=manual_device_contexts,
+                                    )
+                                else:
+                                    result_text = _analyze_barcode_log_scan_events(
+                                        _get_s3_client(),
+                                        barcode or "",
+                                        log_date,
+                                        recordings_context=context,
+                                        device_contexts=manual_device_contexts,
+                                    )
+                    else:
+                        analysis_mode = base_mode
+                        if base_mode == "error":
+                            result_text = _analyze_barcode_log_errors(
+                                _get_s3_client(),
+                                barcode or "",
+                                log_date,
+                                recordings_context=context,
+                            )
+                        else:
+                            result_text = _analyze_barcode_log_scan_events(
+                                _get_s3_client(),
+                                barcode or "",
+                                log_date,
+                                recordings_context=context,
+                            )
+                else:
+                    result_text = _analyze_barcode_log_phase1_window(
+                        _get_s3_client(),
+                        barcode or "",
+                        recordings_context=context,
+                        max_days=cs.LOG_PHASE1_MAX_DAYS,
+                    )
+
+                if analysis_mode in {"scope_required", "scope_not_found"}:
+                    reply(result_text)
+                    logger.info(
+                        "Responded with barcode log scope guidance in thread_ts=%s barcode=%s mode=%s",
+                        thread_ts,
+                        barcode,
+                        analysis_mode,
+                    )
+                    return
+
                 evidence_payload = {
                     "route": "barcode_log_analysis",
                     "source": "box_db+s3",
                     "request": {
                         "barcode": barcode,
                         "date": log_date,
+                        "hasRequestedDate": has_requested_date,
                         "mode": analysis_mode,
+                        "phase1MaxDays": cs.LOG_PHASE1_MAX_DAYS,
+                        "recordingsCount": recording_count,
+                        "recordingsHasDeviceMapping": has_device_mapping,
+                        "phase2HospitalName": phase2_hospital_name,
+                        "phase2RoomName": phase2_room_name,
+                        "usedManualScope": used_manual_scope,
                     },
                     "analysisResult": result_text,
                 }

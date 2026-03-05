@@ -1,6 +1,6 @@
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -16,6 +16,12 @@ _KOREAN_YMD_PATTERN = re.compile(
 )
 _NUMERIC_MD_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*[./]\s*(\d{1,2})(?!\d)")
 _KOREAN_MD_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*월\s*(\d{1,2})\s*일(?!\d)")
+_HOSPITAL_SCOPE_PATTERN = re.compile(
+    r"병원명\s*[:=]?\s*(.+?)(?=\s+(?:병실명|진료실명|날짜|로그|분석)\b|$)"
+)
+_ROOM_SCOPE_PATTERN = re.compile(
+    r"(?:병실명|진료실명)\s*[:=]?\s*(.+?)(?=\s+(?:날짜|로그|분석)\b|$)"
+)
 _TODAY_HINTS = ("오늘", "금일", "today")
 _DAY_BEFORE_YESTERDAY_HINTS = ("그제", "엊그제", "day before yesterday")
 _TOMORROW_HINTS = ("내일", "tomorrow")
@@ -92,6 +98,11 @@ def _has_relative_date_token(text: str, lowered: str) -> bool:
 
 
 def _extract_log_date(question: str) -> str:
+    parsed_date, _ = _extract_log_date_with_presence(question)
+    return parsed_date
+
+
+def _extract_log_date_with_presence(question: str) -> tuple[str, bool]:
     text = (question or "").strip()
     lowered = text.lower()
 
@@ -99,13 +110,14 @@ def _extract_log_date(question: str) -> str:
     if has_explicit_date:
         if parsed_explicit_date is None:
             raise ValueError("날짜 형식을 확인해줘. 예: 2026-03-03, 26.03.03, 3/3, 3월 3일")
-        return parsed_explicit_date
+        return parsed_explicit_date, True
 
     base_date = _current_local_date()
     relative_offset = _extract_relative_day_offset(text, lowered)
     if relative_offset is not None:
         base_date = base_date + timedelta(days=relative_offset)
-    return base_date.strftime("%Y-%m-%d")
+        return base_date.strftime("%Y-%m-%d"), True
+    return base_date.strftime("%Y-%m-%d"), False
 
 
 def _is_barcode_log_analysis_request(question: str, barcode: str | None) -> bool:
@@ -365,6 +377,82 @@ def _line_in_any_session(line_no: int, sessions: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _to_local_date(value: object) -> date | None:
+    if not isinstance(value, datetime):
+        return None
+
+    tz_name = os.getenv("TZ", "Asia/Seoul")
+    try:
+        local_tz = ZoneInfo(tz_name)
+    except Exception:
+        local_tz = ZoneInfo("Asia/Seoul")
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(local_tz).date()
+
+
+def _build_phase2_scope_request_message(
+    barcode: str,
+    reason: str,
+    title: str,
+) -> str:
+    return "\n".join(
+        [
+            title,
+            f"• 바코드: `{barcode}`",
+            f"• 사유: {reason}",
+            "• 2차 조회를 위해 아래 3가지를 같이 입력해줘:",
+            "- 병원명 (MDA에 표시된 정확한 이름)",
+            "- 병실명 (MDA에 표시된 정확한 이름)",
+            "- 날짜(KST, YYYY-MM-DD)",
+            f"예: `{barcode} 병원명 세화병원(부산) 병실명 7진료실 2026-01-30 로그 분석`",
+        ]
+    )
+
+
+def _extract_hospital_room_scope(question: str) -> tuple[str | None, str | None]:
+    text = (question or "").strip()
+    hospital_match = _HOSPITAL_SCOPE_PATTERN.search(text)
+    room_match = _ROOM_SCOPE_PATTERN.search(text)
+
+    def _clean(value: str) -> str:
+        normalized = " ".join(value.split()).strip().strip("`'\"")
+        normalized = re.sub(r"\s+\d{2,4}[./-]\d{1,2}[./-]\d{1,2}\s*$", "", normalized)
+        normalized = re.sub(r"\s+\d{1,2}\s*월\s*\d{1,2}\s*일\s*$", "", normalized)
+        normalized = re.sub(r"\s*(?:로그|분석)\s*$", "", normalized)
+        return normalized.strip()
+
+    hospital_name = _clean(hospital_match.group(1)) if hospital_match else ""
+    room_name = _clean(room_match.group(1)) if room_match else ""
+    return (hospital_name or None, room_name or None)
+
+
+def _extract_phase1_date_window(recordings_context: dict[str, Any]) -> tuple[date, date] | None:
+    summary = recordings_context.get("summary") or {}
+    last_recorded_at = summary.get("lastRecordedAt")
+    last_recorded_date = _to_local_date(last_recorded_at)
+    if last_recorded_date is None:
+        return None
+
+    today = _current_local_date()
+    if last_recorded_date > today:
+        last_recorded_date = today
+    return last_recorded_date, today
+
+
+def _iter_date_labels(start_date: date, end_date: date) -> list[str]:
+    if start_date > end_date:
+        return []
+
+    labels: list[str] = []
+    cursor = start_date
+    while cursor <= end_date:
+        labels.append(cursor.strftime("%Y-%m-%d"))
+        cursor += timedelta(days=1)
+    return labels
+
+
 def _append_scan_events_section(lines: list[str], events: list[dict[str, Any]]) -> None:
     lines.append(f"• scanned 이벤트: *{len(events)}건*")
     if not events:
@@ -396,17 +484,160 @@ def _append_error_lines_section(lines: list[str], error_lines: list[tuple[int, s
         lines.append(f"- [{line_no}] {sample}")
 
 
-def _analyze_barcode_log_scan_events(
+def _analyze_barcode_log_phase1_window(
     s3_client: Any,
     barcode: str,
-    log_date: str,
-    recordings_context: dict[str, Any] | None = None,
+    recordings_context: dict[str, Any],
+    max_days: int,
 ) -> str:
+    title = "*바코드 로그 분석 결과 (1차 자동 범위)*"
+    summary = recordings_context.get("summary") or {}
+    recording_count = int(summary.get("recordingCount") or 0)
+    if recording_count <= 0:
+        return _build_phase2_scope_request_message(
+            barcode,
+            "recordings 데이터가 없어 자동 범위를 계산할 수 없어",
+            title,
+        )
+
+    date_window = _extract_phase1_date_window(recordings_context)
+    if date_window is None:
+        return _build_phase2_scope_request_message(
+            barcode,
+            "마지막 recordedAt 정보를 찾지 못했어",
+            title,
+        )
+    start_date, end_date = date_window
+    day_span = (end_date - start_date).days + 1
+    bounded_max_days = max(1, max_days)
+    if day_span > bounded_max_days:
+        return _build_phase2_scope_request_message(
+            barcode,
+            (
+                f"1차 범위가 `{day_span}일`(시작 `{start_date:%Y-%m-%d}`)이라 "
+                f"상한 `{bounded_max_days}일`을 초과했어"
+            ),
+            title,
+        )
+
     device_contexts = _lookup_device_contexts_by_barcode(
         barcode,
         recordings_context=recordings_context,
     )
     if not device_contexts:
+        return _build_phase2_scope_request_message(
+            barcode,
+            "장비 매핑 정보를 찾지 못했어",
+            title,
+        )
+
+    max_devices = max(1, min(20, cs.LOG_ANALYSIS_MAX_DEVICES))
+    target_device_contexts = device_contexts[:max_devices]
+    omitted_device_count = max(0, len(device_contexts) - len(target_device_contexts))
+    target_date_labels = _iter_date_labels(start_date, end_date)
+
+    found_log_files = 0
+    matched_scope_count = 0
+    total_sessions = 0
+    lines = [
+        title,
+        f"• 바코드: `{barcode}`",
+        f"• 분석 범위(KST): `{start_date:%Y-%m-%d}` ~ `{end_date:%Y-%m-%d}` (`{day_span}일`)",
+        f"• 매핑 장비: `{len(device_contexts)}개`",
+    ]
+    if omitted_device_count > 0:
+        lines.append(f"• 참고: 장비가 많아서 상위 `{len(target_device_contexts)}개`만 분석했어")
+
+    for date_label in target_date_labels:
+        for device_context in target_device_contexts:
+            device_name = str(device_context.get("deviceName") or "")
+            if not device_name:
+                continue
+
+            log_data = _fetch_s3_device_log_lines(
+                s3_client,
+                device_name,
+                date_label,
+                tail_only=False,
+            )
+            if not log_data["found"]:
+                continue
+
+            found_log_files += 1
+            source_lines = log_data["lines"]
+            events = _extract_scan_events_with_line_no(source_lines)
+            sessions = _extract_recording_sessions(
+                source_lines,
+                barcode,
+                cs.LOG_SESSION_SAFETY_LINES,
+                scan_events=events,
+            )
+            if not sessions:
+                continue
+
+            matched_scope_count += 1
+            total_sessions += len(sessions)
+            error_lines = _find_error_lines(source_lines)
+            session_events = [
+                event
+                for event in events
+                if _line_in_any_session(int(event["line_no"]), sessions)
+            ]
+            session_error_lines = [
+                (line_no, content)
+                for (line_no, content) in error_lines
+                if _line_in_any_session(line_no, sessions)
+            ]
+
+            hospital_name = _display_value(device_context.get("hospitalName"), default="미확인")
+            room_name = _display_value(device_context.get("roomName"), default="미확인")
+
+            lines.append("")
+            lines.append(f"*장비 `{device_name}` | 날짜 `{date_label}`*")
+            lines.append(f"• 병원: `{hospital_name}`")
+            lines.append(f"• 병실: `{room_name}`")
+            lines.append(f"• 요청 바코드 녹화 세션: *{len(sessions)}건*")
+            _append_scan_events_section(lines, session_events)
+            _append_error_lines_section(lines, session_error_lines)
+
+    if found_log_files == 0:
+        return (
+            f"{title}\n"
+            f"• 바코드: `{barcode}`\n"
+            f"• 분석 범위(KST): `{start_date:%Y-%m-%d}` ~ `{end_date:%Y-%m-%d}` (`{day_span}일`)\n"
+            f"• 매핑 장비: `{len(device_contexts)}개`\n"
+            "• 확인한 로그 파일: `0개`\n"
+            "*요약*: 범위 내 로그 파일을 찾지 못했어"
+        )
+
+    lines.append("")
+    lines.append(f"• 확인한 로그 파일: `{found_log_files}개`")
+    if matched_scope_count > 0:
+        lines.append(f"• 요청 바코드 세션이 확인된 로그 범위: `{matched_scope_count}개`")
+        lines.append(f"*요약*: 범위 내 요청 바코드 녹화 세션 `{total_sessions}건`을 찾았어")
+    else:
+        lines.append("• 요청 바코드 세션이 확인된 로그 범위: `0개`")
+        lines.append("*요약*: 범위 내 로그는 확인했지만 요청 바코드 세션은 찾지 못했어")
+
+    max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 25000)
+    return _truncate_text("\n".join(lines), max_result_chars)
+
+
+def _analyze_barcode_log_scan_events(
+    s3_client: Any,
+    barcode: str,
+    log_date: str,
+    recordings_context: dict[str, Any] | None = None,
+    device_contexts: list[dict[str, Any]] | None = None,
+) -> str:
+    all_device_contexts = device_contexts
+    if all_device_contexts is None:
+        all_device_contexts = _lookup_device_contexts_by_barcode(
+            barcode,
+            recordings_context=recordings_context,
+        )
+
+    if not all_device_contexts:
         return (
             "*바코드 로그 스캔 분석 결과*\n"
             f"• 바코드: `{barcode}`\n"
@@ -415,8 +646,8 @@ def _analyze_barcode_log_scan_events(
         )
 
     max_devices = max(1, min(20, cs.LOG_ANALYSIS_MAX_DEVICES))
-    target_device_contexts = device_contexts[:max_devices]
-    omitted_device_count = max(0, len(device_contexts) - len(target_device_contexts))
+    target_device_contexts = all_device_contexts[:max_devices]
+    omitted_device_count = max(0, len(all_device_contexts) - len(target_device_contexts))
     total_session_count = 0
     found_log_files = 0
     devices_with_session = 0
@@ -425,7 +656,7 @@ def _analyze_barcode_log_scan_events(
         "*바코드 로그 스캔 분석 결과*",
         f"• 바코드: `{barcode}`",
         f"• 날짜: `{log_date}`",
-        f"• 매핑 장비: `{len(device_contexts)}개`",
+        f"• 매핑 장비: `{len(all_device_contexts)}개`",
     ]
     if omitted_device_count > 0:
         lines.append(f"• 참고: 장비가 많아서 상위 `{len(target_device_contexts)}개`만 분석했어")
@@ -505,7 +736,7 @@ def _analyze_barcode_log_scan_events(
             "*바코드 로그 스캔 분석 결과*\n"
             f"• 바코드: `{barcode}`\n"
             f"• 날짜: `{log_date}`\n"
-            f"• 매핑 장비: `{len(device_contexts)}개`\n"
+            f"• 매핑 장비: `{len(all_device_contexts)}개`\n"
             "• 확인한 로그 파일: `0개`\n"
             "*요약*: 요청 날짜의 로그 파일을 찾지 못했어"
         )
@@ -528,12 +759,16 @@ def _analyze_barcode_log_errors(
     barcode: str,
     log_date: str,
     recordings_context: dict[str, Any] | None = None,
+    device_contexts: list[dict[str, Any]] | None = None,
 ) -> str:
-    device_contexts = _lookup_device_contexts_by_barcode(
-        barcode,
-        recordings_context=recordings_context,
-    )
-    if not device_contexts:
+    all_device_contexts = device_contexts
+    if all_device_contexts is None:
+        all_device_contexts = _lookup_device_contexts_by_barcode(
+            barcode,
+            recordings_context=recordings_context,
+        )
+
+    if not all_device_contexts:
         return (
             "*바코드 로그 에러 분석 결과*\n"
             f"• 바코드: `{barcode}`\n"
@@ -542,8 +777,8 @@ def _analyze_barcode_log_errors(
         )
 
     max_devices = max(1, min(20, cs.LOG_ANALYSIS_MAX_DEVICES))
-    target_device_contexts = device_contexts[:max_devices]
-    omitted_device_count = max(0, len(device_contexts) - len(target_device_contexts))
+    target_device_contexts = all_device_contexts[:max_devices]
+    omitted_device_count = max(0, len(all_device_contexts) - len(target_device_contexts))
 
     total_error_lines = 0
     found_log_files = 0
@@ -553,7 +788,7 @@ def _analyze_barcode_log_errors(
         "*바코드 로그 에러 분석 결과*",
         f"• 바코드: `{barcode}`",
         f"• 날짜: `{log_date}`",
-        f"• 매핑 장비: `{len(device_contexts)}개`",
+        f"• 매핑 장비: `{len(all_device_contexts)}개`",
     ]
     if omitted_device_count > 0:
         lines.append(f"• 참고: 장비가 많아서 상위 `{len(target_device_contexts)}개`만 분석했어")
@@ -631,7 +866,7 @@ def _analyze_barcode_log_errors(
             "*바코드 로그 에러 분석 결과*\n"
             f"• 바코드: `{barcode}`\n"
             f"• 날짜: `{log_date}`\n"
-            f"• 매핑 장비: `{len(device_contexts)}개`\n"
+            f"• 매핑 장비: `{len(all_device_contexts)}개`\n"
             "• 확인한 로그 파일: `0개`\n"
             "*요약*: 요청 날짜의 로그 파일을 찾지 못했어"
         )

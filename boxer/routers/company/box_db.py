@@ -395,3 +395,65 @@ def _lookup_device_names_by_barcode(
         recordings_context=recordings_context,
     )
     return [str(item.get("deviceName")) for item in items if item.get("deviceName")]
+
+
+def _lookup_device_contexts_by_hospital_room(
+    hospital_name: str,
+    room_name: str,
+) -> list[dict[str, Any]]:
+    if not s.DB_HOST or not s.DB_USERNAME or not s.DB_PASSWORD or not s.DB_DATABASE:
+        raise RuntimeError("DB 접속 정보(DB_*)가 비어 있어")
+
+    normalized_hospital_name = str(hospital_name or "").strip()
+    normalized_room_name = str(room_name or "").strip()
+    if not normalized_hospital_name or not normalized_room_name:
+        return []
+
+    limit = max(1, min(50, cs.LOG_ANALYSIS_MAX_DEVICES * 4))
+    connection = _create_db_connection(s.DB_QUERY_TIMEOUT_SEC)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT "
+                "h.seq AS hospitalSeq, "
+                "h.hospitalName AS hospitalName, "
+                "hr.seq AS hospitalRoomSeq, "
+                "hr.roomName AS roomName, "
+                "d.seq AS deviceSeq, "
+                "d.deviceName AS deviceName "
+                "FROM hospitals h "
+                "INNER JOIN hospital_rooms hr ON hr.hospitalSeq = h.seq "
+                "INNER JOIN devices d ON d.hospitalSeq = h.seq AND d.hospitalRoomSeq = hr.seq "
+                "WHERE h.hospitalName = %s "
+                "AND hr.roomName = %s "
+                "AND COALESCE(d.deviceName, '') <> '' "
+                "ORDER BY d.seq DESC "
+                "LIMIT %s",
+                (
+                    normalized_hospital_name,
+                    normalized_room_name,
+                    limit,
+                ),
+            )
+            rows = cursor.fetchall() or []
+    finally:
+        connection.close()
+
+    items: list[dict[str, Any]] = []
+    seen_device_names: set[str] = set()
+    for row in rows:
+        device_name = _display_value(row.get("deviceName"), default="")
+        if not device_name or device_name in seen_device_names:
+            continue
+        seen_device_names.add(device_name)
+        items.append(
+            {
+                "deviceName": device_name,
+                "deviceSeq": row.get("deviceSeq"),
+                "hospitalSeq": row.get("hospitalSeq"),
+                "hospitalRoomSeq": row.get("hospitalRoomSeq"),
+                "hospitalName": row.get("hospitalName"),
+                "roomName": row.get("roomName"),
+            }
+        )
+    return items
