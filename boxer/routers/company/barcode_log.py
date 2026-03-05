@@ -16,6 +16,10 @@ _KOREAN_YMD_PATTERN = re.compile(
 )
 _NUMERIC_MD_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*[./]\s*(\d{1,2})(?!\d)")
 _KOREAN_MD_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*월\s*(\d{1,2})\s*일(?!\d)")
+_MOTION_STOP_STATUS_PATTERN = re.compile(
+    r"Motion detected:\s*(true|false)\s*,\s*Error:\s*(true|false)",
+    re.IGNORECASE,
+)
 _HOSPITAL_SCOPE_PATTERN = re.compile(
     r"병원명\s*[:=]?\s*(.+?)(?=\s+(?:병실명|진료실명|날짜|로그|분석)\b|$)"
 )
@@ -305,6 +309,113 @@ def _extract_scan_events_with_line_no(lines: list[str]) -> list[dict[str, Any]]:
     return events
 
 
+def _extract_motion_events_with_line_no(lines: list[str]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    latest_time_label: str | None = None
+
+    for line_no, line in enumerate(lines, start=1):
+        line_time_label = _extract_time_label_from_line(line)
+        if line_time_label != "시간미상":
+            latest_time_label = line_time_label
+
+        lowered = line.lower()
+        event_type = ""
+        label = ""
+        motion_detected: bool | None = None
+        error_flag: bool | None = None
+
+        if "motion detection process initiated successfully" in lowered:
+            event_type = "motion_start"
+            label = "모션 감지 시작(정상)"
+        elif (
+            "motion detected for" in lowered
+            and "stopping detection to start recording" in lowered
+        ):
+            event_type = "motion_trigger"
+            label = "모션 감지 성공(녹화 전환)"
+        elif "stopping motion detection." in lowered:
+            event_type = "motion_stop"
+            label = "모션 감지 종료"
+            matched = _MOTION_STOP_STATUS_PATTERN.search(line)
+            if matched:
+                motion_detected = matched.group(1).lower() == "true"
+                error_flag = matched.group(2).lower() == "true"
+        else:
+            continue
+
+        time_label = line_time_label
+        if time_label == "시간미상" and latest_time_label:
+            time_label = latest_time_label
+
+        events.append(
+            {
+                "line_no": line_no,
+                "time_label": time_label,
+                "event_type": event_type,
+                "label": label,
+                "motion_detected": motion_detected,
+                "error": error_flag,
+            }
+        )
+    return events
+
+
+def _summarize_motion_session(
+    motion_events: list[dict[str, Any]],
+) -> dict[str, str]:
+    if not motion_events:
+        return {
+            "start_time": "미확인",
+            "end_time": "미확인",
+            "success": "미확인",
+            "stop_status": "미확인",
+        }
+
+    start_time = "미확인"
+    end_time = "미확인"
+    success = "미확인"
+    stop_status = "미확인"
+
+    start_event = next(
+        (event for event in motion_events if event.get("event_type") == "motion_start"),
+        None,
+    )
+    if start_event is not None:
+        start_time = _display_value(start_event.get("time_label"), default="미확인")
+
+    stop_events = [event for event in motion_events if event.get("event_type") == "motion_stop"]
+    if stop_events:
+        stop_event = stop_events[-1]
+        end_time = _display_value(stop_event.get("time_label"), default="미확인")
+        motion_detected = stop_event.get("motion_detected")
+        error_flag = stop_event.get("error")
+        if motion_detected is not None and error_flag is not None:
+            stop_status = f"motionDetected={str(bool(motion_detected)).lower()}, error={str(bool(error_flag)).lower()}"
+            if bool(motion_detected) and not bool(error_flag):
+                success = "성공"
+            elif bool(error_flag):
+                success = "실패"
+
+    trigger_event = next(
+        (event for event in motion_events if event.get("event_type") == "motion_trigger"),
+        None,
+    )
+    if trigger_event is not None:
+        success = "성공"
+        if start_time == "미확인":
+            start_time = _display_value(trigger_event.get("time_label"), default="미확인")
+
+    if end_time == "미확인" and trigger_event is not None:
+        end_time = _display_value(trigger_event.get("time_label"), default="미확인")
+
+    return {
+        "start_time": start_time,
+        "end_time": end_time,
+        "success": success,
+        "stop_status": stop_status,
+    }
+
+
 def _extract_recording_sessions(
     lines: list[str],
     barcode: str,
@@ -380,6 +491,17 @@ def _events_in_sessions(events: list[dict[str, Any]], sessions: list[dict[str, A
     ]
 
 
+def _filter_scan_events_for_barcode(events: list[dict[str, Any]], barcode: str) -> list[dict[str, Any]]:
+    normalized_barcode = (barcode or "").strip()
+    filtered: list[dict[str, Any]] = []
+    for event in events:
+        token = str(event.get("token") or "")
+        if re.fullmatch(r"\d{11}", token) and token != normalized_barcode:
+            continue
+        filtered.append(event)
+    return filtered
+
+
 def _error_lines_in_sessions(
     error_lines: list[tuple[int, str]],
     sessions: list[dict[str, Any]],
@@ -391,6 +513,43 @@ def _error_lines_in_sessions(
         for (line_no, content) in error_lines
         if _line_in_any_session(line_no, sessions)
     ]
+
+
+def _append_session_summaries(
+    lines: list[str],
+    barcode: str,
+    sessions: list[dict[str, Any]],
+    scan_events: list[dict[str, Any]],
+    motion_events: list[dict[str, Any]],
+) -> None:
+    lines.append(f"• 요청 바코드 세션 상세: *{len(sessions)}건*")
+    if not sessions:
+        lines.append("- 없음")
+        return
+
+    max_sessions = max(1, min(50, cs.LOG_SCAN_MAX_EVENTS))
+    display_sessions = sessions[-max_sessions:]
+    if len(sessions) > len(display_sessions):
+        lines.append(f"• 참고: 세션이 많아서 최근 `{len(display_sessions)}건`만 표시해")
+
+    start_index = len(sessions) - len(display_sessions) + 1
+    for index, session in enumerate(display_sessions, start=start_index):
+        start_time = _display_value(session.get("start_time_label"), default="시간미상")
+        stop_time = _display_value(session.get("stop_time_label"), default="미확인")
+        session_scan_events = _filter_scan_events_for_barcode(
+            _events_in_session(scan_events, session),
+            barcode,
+        )
+        session_motion_events = _events_in_session(motion_events, session)
+        motion_summary = _summarize_motion_session(session_motion_events)
+
+        lines.append(
+            f"- 세션 {index}: 시작 `{start_time}`, 종료 `{stop_time}`, scanned `{len(session_scan_events)}건`, "
+            f"모션 시작 `{motion_summary['start_time']}`, 모션 종료 `{motion_summary['end_time']}`, "
+            f"모션 성공 `{motion_summary['success']}`"
+        )
+        if motion_summary["stop_status"] != "미확인":
+            lines.append(f"  모션 종료 상태: `{motion_summary['stop_status']}`")
 
 
 def _line_in_any_session(line_no: int, sessions: list[dict[str, Any]]) -> bool:
@@ -710,6 +869,7 @@ def _analyze_barcode_log_scan_events(
         lines.append(f"*장비 `{device_name}`*")
         source_lines = log_data["lines"]
         events = _extract_scan_events_with_line_no(source_lines)
+        motion_events = _extract_motion_events_with_line_no(source_lines)
         error_lines = _find_error_lines(source_lines)
         sessions = _extract_recording_sessions(
             source_lines,
@@ -719,7 +879,10 @@ def _analyze_barcode_log_scan_events(
         )
         session_count = len(sessions)
         total_session_count += session_count
-        session_scoped_events = _events_in_sessions(events, sessions)
+        session_scoped_events = _filter_scan_events_for_barcode(
+            _events_in_sessions(events, sessions),
+            barcode,
+        )
         session_error_lines = _error_lines_in_sessions(error_lines, sessions)
 
         hospital_name = _display_value(device_context.get("hospitalName"), default="미확인")
@@ -739,27 +902,10 @@ def _analyze_barcode_log_scan_events(
             continue
 
         devices_with_session += 1
-        last_session = sessions[-1]
-        start_time_label = _display_value(last_session.get("start_time_label"), default="시간미상")
-        stop_time_label = _display_value(last_session.get("stop_time_label"), default="미확인")
-        lines.append(f"• 마지막 세션 시작: `{start_time_label}`")
-        lines.append(f"• 마지막 세션 종료: `{stop_time_label}`")
         lines.append(
             f"• 세션 기준: `C_STOPSESS` 이후 `{max(0, cs.LOG_SESSION_SAFETY_LINES)}줄` 포함"
         )
-
-        last_session_events = _events_in_session(events, last_session)
-        lines.append(f"• 마지막 세션 스캔 이벤트: *{len(last_session_events)}건*")
-
-        if not last_session_events:
-            lines.append("• 타임라인: 없음")
-            continue
-
-        for event in last_session_events:
-            time_label = _display_value(event.get("time_label"), default="시간미상")
-            label = _display_value(event.get("label"), default="기타 스캔")
-            token = _display_value(event.get("token"), default="unknown")
-            lines.append(f"- {time_label}: {label} (`{token}`)")
+        _append_session_summaries(lines, barcode, sessions, events, motion_events)
 
     if found_log_files == 0:
         return (
@@ -844,6 +990,7 @@ def _analyze_barcode_log_errors(
         lines.append(f"*장비 `{device_name}`*")
         source_lines = log_data["lines"]
         events = _extract_scan_events_with_line_no(source_lines)
+        motion_events = _extract_motion_events_with_line_no(source_lines)
         sessions = _extract_recording_sessions(
             source_lines,
             barcode,
@@ -854,7 +1001,10 @@ def _analyze_barcode_log_errors(
         total_session_count += session_count
         error_lines = _find_error_lines(source_lines)
         total_error_lines += len(error_lines)
-        session_scoped_events = _events_in_sessions(events, sessions)
+        session_scoped_events = _filter_scan_events_for_barcode(
+            _events_in_sessions(events, sessions),
+            barcode,
+        )
         session_error_lines = _error_lines_in_sessions(error_lines, sessions)
 
         hospital_name = _display_value(device_context.get("hospitalName"), default="미확인")
@@ -875,6 +1025,10 @@ def _analyze_barcode_log_errors(
             continue
 
         devices_with_session += 1
+        lines.append(
+            f"• 세션 기준: `C_STOPSESS` 이후 `{max(0, cs.LOG_SESSION_SAFETY_LINES)}줄` 포함"
+        )
+        _append_session_summaries(lines, barcode, sessions, events, motion_events)
         lines.append(f"• 세션 구간 에러 패턴 라인 수: *{len(session_error_lines)}줄*")
 
         if not session_error_lines:
