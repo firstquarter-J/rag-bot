@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any
 
 import pymysql
@@ -87,6 +88,37 @@ def create_app() -> App:
             lowered = str(exc).lower()
             return "timeout" in lowered or "timed out" in lowered
 
+        def _contains_ymd(text_value: str) -> bool:
+            return bool(re.search(r"\b\d{4}-\d{2}-\d{2}\b", text_value or ""))
+
+        def _needs_barcode_log_fallback(
+            synthesized: str,
+            fallback_text: str,
+            route_name: str,
+        ) -> bool:
+            if route_name != "barcode log analysis":
+                return False
+
+            normalized_synth = synthesized or ""
+            normalized_fallback = fallback_text or ""
+            required_labels = ("매핑 장비", "병원", "병실")
+
+            for label in required_labels:
+                if label in normalized_fallback and label not in normalized_synth:
+                    return True
+
+            if ("날짜" in normalized_fallback or _contains_ymd(normalized_fallback)) and (
+                "날짜" not in normalized_synth and not _contains_ymd(normalized_synth)
+            ):
+                return True
+
+            if "scanned 이벤트" in normalized_fallback:
+                has_scan_lines = bool(re.search(r"\b\d{1,2}:\d{2}:\d{2}\b", normalized_synth))
+                if "scanned 이벤트" not in normalized_synth and not has_scan_lines:
+                    return True
+
+            return False
+
         def _reply_with_retrieval_synthesis(
             fallback_text: str,
             evidence_payload: dict[str, Any],
@@ -137,6 +169,8 @@ def create_app() -> App:
                 if "다른 바코드" in final_text and "다른 바코드" not in fallback_text:
                     final_text = fallback_text
                 if "다른 barcode" in final_text and "다른 barcode" not in fallback_text:
+                    final_text = fallback_text
+                if _needs_barcode_log_fallback(final_text, fallback_text, route_name):
                     final_text = fallback_text
                 reply(final_text)
                 logger.info(
@@ -223,13 +257,36 @@ def create_app() -> App:
         db_query = _extract_db_query(question)
         barcode = _extract_barcode(question)
         recordings_context: dict[str, Any] | None = None
+        recordings_context_prefetch_error: Exception | None = None
+
+        if barcode:
+            try:
+                recordings_context = _load_recordings_context_by_barcode(barcode)
+                prefetch_summary = recordings_context.get("summary") or {}
+                logger.info(
+                    "Prefetched recordings context in thread_ts=%s barcode=%s count=%s",
+                    thread_ts,
+                    barcode,
+                    int(prefetch_summary.get("recordingCount") or 0),
+                )
+            except Exception as exc:
+                recordings_context_prefetch_error = exc
+                logger.warning(
+                    "Failed to prefetch recordings context in thread_ts=%s barcode=%s error=%s",
+                    thread_ts,
+                    barcode,
+                    type(exc).__name__,
+                )
 
         def _get_recordings_context() -> dict[str, Any]:
-            nonlocal recordings_context
-            if recordings_context is None:
-                if not barcode:
-                    raise ValueError("바코드가 필요해")
-                recordings_context = _load_recordings_context_by_barcode(barcode)
+            nonlocal recordings_context, recordings_context_prefetch_error
+            if recordings_context is not None:
+                return recordings_context
+            if recordings_context_prefetch_error is not None:
+                raise recordings_context_prefetch_error
+            if not barcode:
+                raise ValueError("바코드가 필요해")
+            recordings_context = _load_recordings_context_by_barcode(barcode)
             return recordings_context
 
         def _build_recordings_rows_evidence(context: dict[str, Any]) -> list[dict[str, Any]]:
