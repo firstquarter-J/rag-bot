@@ -641,12 +641,7 @@ def _append_scan_events_section(lines: list[str], events: list[dict[str, Any]]) 
         lines.append("- 없음")
         return
 
-    sample_limit = max(1, cs.LOG_SCAN_MAX_EVENTS)
-    display_events = events[-sample_limit:]
-    if len(events) > len(display_events):
-        lines.append(f"• 참고: scanned 이벤트가 많아서 최근 `{len(display_events)}건`만 표시해")
-
-    for event in display_events:
+    for event in events:
         time_label = _display_value(event.get("time_label"), default="시간미상")
         label = _display_value(event.get("label"), default="기타 스캔")
         token = _display_value(event.get("token"), default="unknown")
@@ -866,7 +861,7 @@ def _analyze_barcode_log_scan_events(
 
         found_log_files += 1
         lines.append("")
-        lines.append(f"*장비 `{device_name}`*")
+        lines.append(f"• 매핑 장비: `{device_name}`")
         source_lines = log_data["lines"]
         events = _extract_scan_events_with_line_no(source_lines)
         motion_events = _extract_motion_events_with_line_no(source_lines)
@@ -987,7 +982,7 @@ def _analyze_barcode_log_errors(
 
         found_log_files += 1
         lines.append("")
-        lines.append(f"*장비 `{device_name}`*")
+        lines.append(f"• 매핑 장비: `{device_name}`")
         source_lines = log_data["lines"]
         events = _extract_scan_events_with_line_no(source_lines)
         motion_events = _extract_motion_events_with_line_no(source_lines)

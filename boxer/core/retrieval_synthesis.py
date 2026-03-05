@@ -95,6 +95,46 @@ def _serialize_evidence_payload(payload: Any) -> str:
     return _truncate_text(raw, max(500, s.LLM_SYNTHESIS_MAX_EVIDENCE_CHARS))
 
 
+def _build_route_specific_rules(evidence_payload: Any) -> str:
+    if not isinstance(evidence_payload, dict):
+        return ""
+
+    route = str(evidence_payload.get("route") or "").strip().lower()
+    if route != "barcode_log_analysis":
+        return ""
+
+    request_payload = evidence_payload.get("request") if isinstance(evidence_payload, dict) else None
+    mode = ""
+    if isinstance(request_payload, dict):
+        mode = str(request_payload.get("mode") or "").strip().lower()
+    is_error_mode = "error" in mode
+
+    common_rules = (
+        "\n"
+        "7) For barcode log analysis, keep this field order and labels explicitly:\n"
+        "   - 매핑 장비:\n"
+        "   - 병원:\n"
+        "   - 병실:\n"
+        "8) If scanned events exist in evidence, list all scanned events with time in chronological order.\n"
+        "9) Do not collapse scanned events into only summary counts.\n"
+        "10) If evidence contains notionPlaybook/notion references, include a '참고 플레이북' section and cite only those references."
+    )
+    if not is_error_mode:
+        return common_rules
+
+    return (
+        common_rules
+        + "\n"
+        "11) For error-focused analysis, add these sections in order:\n"
+        "    - 에러 요약\n"
+        "    - 관찰된 에러 패턴(시간/컴포넌트/핵심 메시지)\n"
+        "    - 가능 원인(근거 라인 기반, 확실/추정 구분)\n"
+        "    - 즉시 확인할 항목(로그/메트릭/설정)\n"
+        "    - 우선 조치(1~3순위)\n"
+        "12) For causes, never guess without evidence. If inferred, prefix with '추정:'."
+    )
+
+
 def _build_retrieval_synthesis_input(
     question: str,
     thread_context: str,
@@ -102,6 +142,7 @@ def _build_retrieval_synthesis_input(
 ) -> str:
     evidence_text = _serialize_evidence_payload(evidence_payload)
     normalized_question = (question or "").strip()
+    route_rules = _build_route_specific_rules(evidence_payload)
 
     if thread_context:
         return (
@@ -118,6 +159,7 @@ def _build_retrieval_synthesis_input(
             "4) Do not claim actions or results not in evidence.\n"
             "5) Do not suggest using another barcode/service unless evidence explicitly says so.\n"
             "6) For factual checks, start with direct yes/no and one-sentence reason."
+            f"{route_rules}"
         )
 
     return (
@@ -132,6 +174,7 @@ def _build_retrieval_synthesis_input(
         "4) Do not claim actions or results not in evidence.\n"
         "5) Do not suggest using another barcode/service unless evidence explicitly says so.\n"
         "6) For factual checks, start with direct yes/no and one-sentence reason."
+        f"{route_rules}"
     )
 
 
