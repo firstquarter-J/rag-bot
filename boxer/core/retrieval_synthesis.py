@@ -116,7 +116,7 @@ def _build_route_specific_rules(evidence_payload: Any) -> str:
         "   - 병원:\n"
         "   - 병실:\n"
         "   - 날짜:\n"
-        "8) If scanned events exist in evidence, list all scanned events with time in chronological order.\n"
+        "8) If scanned/motion events exist in evidence, list all of them in one chronological timeline with time labels.\n"
         "9) Do not collapse scanned events into only summary counts.\n"
         "10) If error lines exist in evidence, list all deduplicated session error lines with time labels in chronological order. Do not summarize away individual lines.\n"
         "11) Never omit the date in barcode log analysis answers.\n"
