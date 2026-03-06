@@ -7,7 +7,7 @@ from typing import Any
 from anthropic import Anthropic
 
 from boxer.core import settings as s
-from boxer.core.llm import _ask_claude, _ask_ollama, _ask_ollama_chat
+from boxer.core.llm import _ask_claude, _ask_ollama_chat
 from boxer.core.utils import _truncate_text
 
 _PHONE_PATTERN = re.compile(r"\b01[016789]-?\d{3,4}-?\d{4}\b")
@@ -334,22 +334,12 @@ def _synthesize_retrieval_answer(
         )
 
     if normalized_provider == "ollama":
-        route = ""
-        if isinstance(payload, dict):
-            route = str(payload.get("route") or "").strip().lower()
-        if route == "barcode_log_error_summary":
-            return _ask_ollama_chat(
-                user_input,
-                system_prompt=prompt,
-                max_tokens=max_tokens,
-                timeout_sec=ollama_timeout_sec,
-                think=False,
-            )
-        return _ask_ollama(
+        return _ask_ollama_chat(
             user_input,
             system_prompt=prompt,
             max_tokens=max_tokens,
             timeout_sec=ollama_timeout_sec,
+            think=False,
         )
 
     return ""

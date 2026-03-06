@@ -1,10 +1,55 @@
 import json
+import re
 import time
 from urllib import error, request
 
 from anthropic import Anthropic
 
 from boxer.core import settings as s
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_REASONING_PREFIX_RE = re.compile(
+    r"^\s*(okay\b|ok\b|let'?s\b|first\b|the user\b|looking at\b|wait\b|now\b|based on\b|i need\b|we need\b|so,?\b|hmm\b)",
+    re.IGNORECASE,
+)
+_FINAL_SECTION_MARKERS = (
+    "*에러 분석*",
+    "## 에러 분석",
+    "에러 분석",
+    "• 핵심 원인:",
+    "핵심 원인:",
+)
+
+
+def _sanitize_ollama_output(text: str) -> str:
+    cleaned = _THINK_BLOCK_RE.sub("", text or "").strip()
+    if not cleaned:
+        return ""
+
+    for marker in _FINAL_SECTION_MARKERS:
+        index = cleaned.find(marker)
+        if index > 0:
+            cleaned = cleaned[index:].strip()
+            break
+
+    if not cleaned:
+        return ""
+
+    lines = cleaned.splitlines()
+    filtered: list[str] = []
+    skipping_prefix = True
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if filtered and filtered[-1] != "":
+                filtered.append("")
+            continue
+        if skipping_prefix and _REASONING_PREFIX_RE.match(stripped):
+            continue
+        skipping_prefix = False
+        filtered.append(stripped)
+
+    return "\n".join(filtered).strip()
 
 
 def _ask_claude(
@@ -77,7 +122,7 @@ def _ask_ollama(
     except json.JSONDecodeError as exc:
         raise RuntimeError("Ollama API returned invalid JSON") from exc
 
-    return str(data.get("response", "")).strip()
+    return _sanitize_ollama_output(str(data.get("response", "")).strip())
 
 
 def _ask_ollama_chat(
@@ -137,7 +182,7 @@ def _ask_ollama_chat(
     message = data.get("message")
     if not isinstance(message, dict):
         return ""
-    return str(message.get("content", "")).strip()
+    return _sanitize_ollama_output(str(message.get("content", "")).strip())
 
 
 def _check_ollama_health(

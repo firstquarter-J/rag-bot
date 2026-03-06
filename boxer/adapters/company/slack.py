@@ -12,7 +12,7 @@ from boxer.adapters.company.fun import handle_fun_message
 from boxer.company import settings as cs
 from boxer.company.utils import _extract_barcode
 from boxer.core import settings as s
-from boxer.core.llm import _ask_claude, _ask_ollama, _check_ollama_health
+from boxer.core.llm import _ask_claude, _ask_ollama_chat, _check_ollama_health
 from boxer.core.retrieval_synthesis import _synthesize_retrieval_answer
 from boxer.core.thread_context import _build_model_input, _load_thread_context
 from boxer.core.utils import _validate_tokens
@@ -1119,7 +1119,11 @@ def create_app() -> App:
                     current_ts,
                 )
                 model_input = _build_model_input(question, thread_context)
-                answer = _ask_ollama(model_input, system_prompt=cs.SYSTEM_PROMPT)
+                answer = _ask_ollama_chat(
+                    model_input,
+                    system_prompt=cs.SYSTEM_PROMPT,
+                    think=False,
+                )
                 if not answer:
                     answer = "답변을 생성하지 못했어. 다시 질문해줘"
                 reply(answer)
