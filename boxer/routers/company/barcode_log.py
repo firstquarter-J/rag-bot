@@ -275,6 +275,8 @@ def _find_error_lines(lines: list[str]) -> list[tuple[int, str]]:
     matches: list[tuple[int, str]] = []
     for line_no, line in enumerate(lines, start=1):
         lowered = line.lower()
+        if "low growth rate detected:" in lowered:
+            continue
         if any(keyword in lowered for keyword in cs.LOG_ERROR_KEYWORDS):
             matches.append((line_no, line))
     return matches
@@ -709,6 +711,8 @@ def _append_scan_events_section(
             base = f"{base} | {detail}"
         timeline_rows.append(base)
 
+    # Slack mrkdwn can mis-render a fence immediately after a bullet line.
+    lines.append("")
     lines.append("```")
     lines.extend(timeline_rows)
     lines.append("```")
@@ -741,6 +745,8 @@ def _append_error_lines_section(
             sample = sample[:220] + "...(truncated)"
         rows.append(f"{time_label:>8}  [{line_no}] {sample}")
 
+    # Keep the fence detached from the bullet header for stable Slack rendering.
+    lines.append("")
     lines.append("```")
     lines.extend(rows)
     lines.append("```")
