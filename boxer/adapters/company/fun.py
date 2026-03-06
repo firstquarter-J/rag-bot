@@ -21,7 +21,7 @@ TRAILING_ENDING_RE = re.compile(r"(이네|이야|인가요|인가|인데|네요|
 TRAILING_PARTICLE_RE = re.compile(r"(은|는|이|가|을|를|도|만|이나|나|랑|과|와|임|야|냐|네|군|지)$")
 FUN_REPLY_SANITIZE_RE = re.compile(r"\s+")
 FUN_BAD_REPLY_RE = re.compile(
-    r"(okay|let'?s|the user|i think|저는|나는|제가|설명|해설|안녕하세요|반갑|도와|죄송|미안)",
+    r"(okay|let'?s|the user|i think|저는|나는|제가|설명|해설|안녕하세요|반갑|도와|죄송|미안|예시|출력 규칙)",
     re.IGNORECASE,
 )
 FUN_SYSTEM_PROMPT = (
@@ -101,6 +101,7 @@ def _finalize_fun_reply(source_text: str, generated_text: str) -> str:
     if FUN_BAD_REPLY_RE.search(cleaned):
         return ""
 
+    cleaned = re.sub(r"^.*(?:->|=>|:)\s*", "", cleaned).strip()
     cleaned = re.split(r"(?:,|\.|!|;|:| 그런데 | 근데 | 하지만 | 그래서 )", cleaned, maxsplit=1)[0].strip()
     cleaned = cleaned.replace("모대", " ").replace("?", " ").strip()
     cleaned = cleaned.rstrip("!~. ")
@@ -122,10 +123,6 @@ def _build_fun_llm_prompt(text: str) -> str:
     return (
         f"원문: {text.strip()}\n"
         f"추출 토픽: {topic}\n"
-        "예시:\n"
-        "- 밥도 잘 먹지모대? -> 밥도 잘 먹지\n"
-        "- 연애모대 -> 연애도 쉽지\n"
-        "- 로그인도 모대 -> 로그인도 버벅\n"
         "출력 규칙:\n"
         "- DD를 살짝 놀리는 톤\n"
         "- 4~14자 정도의 짧은 구절만\n"
