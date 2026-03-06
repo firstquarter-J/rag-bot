@@ -497,6 +497,7 @@ def _extract_scan_events_with_line_no(lines: list[str]) -> list[dict[str, Any]]:
 def _extract_motion_events_with_line_no(lines: list[str]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     latest_time_label: str | None = None
+    motion_counter_active = False
 
     for line_no, line in enumerate(lines, start=1):
         line_time_label = _extract_time_label_from_line(line)
@@ -512,12 +513,24 @@ def _extract_motion_events_with_line_no(lines: list[str]) -> list[dict[str, Any]
         if "motion detection process initiated successfully" in lowered:
             event_type = "motion_start"
             label = "모션 감지 시작(정상)"
+            motion_counter_active = False
+        elif "motion detection :" in lowered:
+            if motion_counter_active:
+                continue
+            event_type = "motion_start"
+            label = "모션 감지 시작"
+            motion_counter_active = True
+        elif "motion detection passed" in lowered:
+            event_type = "motion_trigger"
+            label = "모션 감지 성공(녹화 전환)"
+            motion_counter_active = False
         elif (
             "motion detected for" in lowered
             and "stopping detection to start recording" in lowered
         ):
             event_type = "motion_trigger"
             label = "모션 감지 성공(녹화 전환)"
+            motion_counter_active = False
         elif "stopping motion detection." in lowered:
             event_type = "motion_stop"
             label = "모션 감지 종료"
@@ -525,7 +538,10 @@ def _extract_motion_events_with_line_no(lines: list[str]) -> list[dict[str, Any]
             if matched:
                 motion_detected = matched.group(1).lower() == "true"
                 error_flag = matched.group(2).lower() == "true"
+            motion_counter_active = False
         else:
+            if "motion detection" not in lowered:
+                motion_counter_active = False
             continue
 
         time_label = line_time_label
