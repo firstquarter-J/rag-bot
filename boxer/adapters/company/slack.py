@@ -97,7 +97,14 @@ def create_app() -> App:
 
         def _timeout_reply_text() -> str:
             timeout_sec = max(1, s.OLLAMA_TIMEOUT_SEC)
-            return f"AI 응답이 {timeout_sec}초 내 완료되지 않아 타임아웃이 발생했어"
+            return f"LLM 서버가 {timeout_sec}초 내 응답하지 않아 AI 답변 생성이 타임아웃됐어"
+
+        def _llm_unavailable_reply_text(summary: str | None = None) -> str:
+            base = "LLM 서버가 응답하지 않아 지금은 AI 답변을 생성할 수 없어"
+            detail = (summary or "").strip()
+            if not detail:
+                return base
+            return f"{base}\n• 상태: {detail}"
 
         def _is_timeout_error(exc: Exception) -> bool:
             lowered = str(exc).lower()
@@ -156,6 +163,16 @@ def create_app() -> App:
                 reply(fallback_text)
                 logger.info("Responded with %s (direct, unsupported provider=%s)", route_name, provider)
                 return
+            if provider == "ollama":
+                health = _check_ollama_health()
+                if not health["ok"]:
+                    reply(fallback_text)
+                    logger.warning(
+                        "Responded with %s (direct, ollama unavailable=%s)",
+                        route_name,
+                        health["summary"],
+                    )
+                    return
             if provider == "claude":
                 if claude_client is None:
                     reply(fallback_text)
@@ -762,6 +779,11 @@ def create_app() -> App:
                 reply("질문 내용을 같이 보내줘")
                 return
             try:
+                health = _check_ollama_health()
+                if not health["ok"]:
+                    logger.warning("Ollama unavailable before answer generation: %s", health["summary"])
+                    reply(_llm_unavailable_reply_text(str(health["summary"])))
+                    return
                 fallback_evidence = _build_barcode_fallback_evidence()
                 if fallback_evidence is not None:
                     synthesis_thread_context = ""
