@@ -1243,7 +1243,6 @@ def _analyze_barcode_log_phase1_window(
             lines.append(f"*장비 `{device_name}` | 날짜 `{date_label}`*")
             lines.append(f"• 병원: `{hospital_name}`")
             lines.append(f"• 병실: `{room_name}`")
-            lines.append(f"• 요청 바코드 녹화 세션: *{len(sessions)}건*")
             _append_session_closure_status(lines, sessions)
             _append_restart_events_section(lines, session_restart_events)
             _append_scan_events_section(lines, session_events, session_motion_events)
@@ -1259,8 +1258,7 @@ def _analyze_barcode_log_phase1_window(
             f"• 바코드: `{barcode}`\n"
             f"• 분석 범위(KST): `{start_date:%Y-%m-%d}` ~ `{end_date:%Y-%m-%d}` (`{day_span}일`)\n"
             f"• 매핑 장비: `{len(device_contexts)}개`\n"
-            "• 확인한 로그 파일: `0개`\n"
-            "*요약*: 범위 내 로그 파일을 찾지 못했어"
+            "• 확인한 로그 파일: `0개`"
         )
         return result_text, _build_log_analysis_payload(
             mode="phase1_window",
@@ -1269,16 +1267,6 @@ def _analyze_barcode_log_phase1_window(
             date_range=f"{start_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d}",
             records=[],
         )
-
-    lines.append("")
-    lines.append(f"• 확인한 로그 파일: `{found_log_files}개`")
-    if matched_scope_count > 0:
-        lines.append(f"• 요청 바코드 세션이 확인된 로그 범위: `{matched_scope_count}개`")
-        lines.append(f"*요약*: 범위 내 요청 바코드 녹화 세션 `{total_sessions}건`을 찾았어")
-    else:
-        lines.append("• 요청 바코드 세션이 확인된 로그 범위: `0개`")
-        lines.append("*요약*: 범위 내 로그는 확인했지만 요청 바코드 세션은 찾지 못했어")
-
     max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 38000)
     result_text = _truncate_text("\n".join(lines), max_result_chars)
     return result_text, _build_log_analysis_payload(
@@ -1411,8 +1399,6 @@ def _analyze_barcode_log_scan_events(
             session_error_lines,
             show_all=True,
         )
-        lines.append(f"• 요청 바코드 녹화 세션: *{session_count}건*")
-
         devices_with_session += 1
 
     if logs_found_any == 0:
@@ -1421,8 +1407,7 @@ def _analyze_barcode_log_scan_events(
             f"• 바코드: `{barcode}`\n"
             f"• 날짜: `{log_date}`\n"
             f"• 매핑 장비: `{len(all_device_contexts)}개`\n"
-            "• 확인한 로그 파일: `0개`\n"
-            "*요약*: 요청 날짜의 로그 파일을 찾지 못했어"
+            "• 확인한 로그 파일: `0개`"
         )
         return result_text, _build_log_analysis_payload(
             mode="scan",
@@ -1438,9 +1423,7 @@ def _analyze_barcode_log_scan_events(
             f"• 바코드: `{barcode}`\n"
             f"• 날짜: `{log_date}`\n"
             f"• 매핑 장비: `{len(all_device_contexts)}개`\n"
-            f"• 확인한 로그 파일: `{logs_found_any}개`\n"
-            "• 요청 바코드 세션이 확인된 장비: `0개`\n"
-            f"*요약*: 로그 파일은 확인했지만 요청 바코드 `{barcode}` 세션은 찾지 못했어"
+            f"• 확인한 로그 파일: `{logs_found_any}개`"
         )
         return result_text, _build_log_analysis_payload(
             mode="scan",
@@ -1449,15 +1432,6 @@ def _analyze_barcode_log_scan_events(
             date_range=None,
             records=[],
         )
-
-    lines.append("")
-    lines.append(f"• 확인한 로그 파일: `{logs_with_session}개`")
-    lines.append(f"• 요청 바코드 세션이 확인된 장비: `{devices_with_session}개`")
-    if total_session_count > 0:
-        lines.append(f"*요약*: 분석 범위에서 요청 바코드 녹화 세션 `{total_session_count}건`을 찾았어")
-    else:
-        lines.append(f"*요약*: 로그 파일은 확인했지만 요청 바코드 `{barcode}` 세션은 찾지 못했어")
-
     max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 38000)
     result_text = _truncate_text("\n".join(lines), max_result_chars)
     return result_text, _build_log_analysis_payload(
@@ -1593,8 +1567,6 @@ def _analyze_barcode_log_errors(
             session_error_lines,
             show_all=True,
         )
-        lines.append(f"• 요청 바코드 녹화 세션: *{session_count}건*")
-
         devices_with_session += 1
 
     if logs_found_any == 0:
@@ -1603,8 +1575,7 @@ def _analyze_barcode_log_errors(
             f"• 바코드: `{barcode}`\n"
             f"• 날짜: `{log_date}`\n"
             f"• 매핑 장비: `{len(all_device_contexts)}개`\n"
-            "• 확인한 로그 파일: `0개`\n"
-            "*요약*: 요청 날짜의 로그 파일을 찾지 못했어"
+            "• 확인한 로그 파일: `0개`"
         )
         return result_text, _build_log_analysis_payload(
             mode="error",
@@ -1620,9 +1591,7 @@ def _analyze_barcode_log_errors(
             f"• 바코드: `{barcode}`\n"
             f"• 날짜: `{log_date}`\n"
             f"• 매핑 장비: `{len(all_device_contexts)}개`\n"
-            f"• 확인한 로그 파일: `{logs_found_any}개`\n"
-            "• 요청 바코드 세션이 확인된 장비: `0개`\n"
-            f"*요약*: 로그 파일은 확인했지만 요청 바코드 `{barcode}` 세션은 찾지 못했어"
+            f"• 확인한 로그 파일: `{logs_found_any}개`"
         )
         return result_text, _build_log_analysis_payload(
             mode="error",
@@ -1631,16 +1600,6 @@ def _analyze_barcode_log_errors(
             date_range=None,
             records=[],
         )
-
-    lines.append("")
-    lines.append(f"• 확인한 로그 파일: `{logs_with_session}개`")
-    lines.append(f"• 요청 바코드 세션이 확인된 장비: `{devices_with_session}개`")
-    lines.append(f"• 세션 구간 error 라인: `{total_session_error_lines}줄`")
-    if total_session_error_lines > 0:
-        lines.append("*요약*: 요청 바코드 세션 구간에서 error 패턴 라인을 확인했어")
-    else:
-        lines.append("*요약*: 요청 바코드 세션 구간에서 error 패턴 라인을 찾지 못했어")
-
     max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 38000)
     result_text = _truncate_text("\n".join(lines), max_result_chars)
     return result_text, _build_log_analysis_payload(

@@ -380,6 +380,63 @@ def create_app() -> App:
                 logger.exception("Retrieval synthesis failed for route=%s", route_name)
                 reply(fallback_text)
 
+        def _build_barcode_log_error_summary_fallback(summary_payload: dict[str, Any]) -> str:
+            summary = summary_payload.get("summary") if isinstance(summary_payload, dict) else None
+            records = summary_payload.get("records") if isinstance(summary_payload, dict) else None
+            if not isinstance(summary, dict) or not isinstance(records, list):
+                return ""
+
+            first_record = records[0] if records and isinstance(records[0], dict) else {}
+            device_name = str(first_record.get("deviceName") or "미확인").strip() or "미확인"
+            hospital_name = str(first_record.get("hospitalName") or "미확인").strip() or "미확인"
+            room_name = str(first_record.get("roomName") or "미확인").strip() or "미확인"
+            date_label = str(first_record.get("date") or summary_payload.get("request", {}).get("date") or "미확인").strip() or "미확인"
+
+            restart_events = first_record.get("restartEvents") if isinstance(first_record, dict) else []
+            restart_event = restart_events[0] if isinstance(restart_events, list) and restart_events else {}
+            restart_time = str(restart_event.get("time") or "시간미상").strip() if isinstance(restart_event, dict) else "시간미상"
+
+            error_groups = first_record.get("errorGroups") if isinstance(first_record, dict) else []
+            top_group = error_groups[0] if isinstance(error_groups, list) and error_groups else {}
+            top_component = str(top_group.get("component") or "미확인").strip() if isinstance(top_group, dict) else "미확인"
+            top_signature = str(top_group.get("signature") or "미확인").strip() if isinstance(top_group, dict) else "미확인"
+            top_count = int(top_group.get("count") or 0) if isinstance(top_group, dict) else 0
+
+            abnormal_count = int(summary.get("abnormalSessionCount") or 0)
+            error_line_count = int(summary.get("errorLineCount") or 0)
+            restart_count = int(summary.get("restartEventCount") or 0)
+
+            lines = [
+                "*에러 분석*",
+                f"• 핵심 원인: 세션 중 장비 재시작과 녹화 오류가 함께 보여 정상 녹화 실패 가능성이 높아"
+                if restart_count > 0
+                else f"• 핵심 원인: `{top_component}`에서 `{top_signature}` 오류가 반복돼 녹화 실패 가능성이 높아",
+                f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 비정상 종료 세션 `{abnormal_count}건`, error 라인 `{error_line_count}줄`이 확인됐어",
+            ]
+
+            evidence_lines: list[str] = []
+            if restart_count > 0:
+                evidence_lines.append(f"- `{restart_time}` 장비 재시작 감지 (`Mommybox Starting...`)")
+            if top_count > 0 and top_signature != "미확인":
+                evidence_lines.append(f"- `{top_component}` `{top_signature}` `{top_count}회`")
+            if evidence_lines:
+                lines.append("• 근거 로그:")
+                lines.extend(evidence_lines)
+
+            action_lines: list[str] = []
+            if restart_count > 0:
+                action_lines.append("- 전원 차단/전원 버튼 오입력 여부 확인")
+            if top_signature != "미확인":
+                action_lines.append(f"- `{top_component}` 관련 장치/프로세스 상태 확인")
+            if "Device or resource busy" in top_signature:
+                action_lines.append("- `/dev/video0` 점유 프로세스와 캡처보드 상태 확인")
+            if not action_lines:
+                action_lines.append("- 동일 시각 장비 상태와 관련 프로세스 로그 확인")
+            lines.append("• 권장 조치:")
+            lines.extend(action_lines[:3])
+            lines.append(f"• 확실도: {'높음' if restart_count > 0 or top_count >= 2 else '중간'}")
+            return "\n".join(lines)
+
         def _reply_with_barcode_log_error_summary(summary_payload: dict[str, Any] | None) -> None:
             if not isinstance(summary_payload, dict):
                 return
@@ -437,18 +494,32 @@ def create_app() -> App:
                 final_text = (synthesized_text or "").strip()
                 if not final_text:
                     logger.warning("Barcode log error summary synthesis returned empty text")
+                    final_text = _build_barcode_log_error_summary_fallback(summary_payload)
+                if not final_text:
                     return
                 reply(final_text, mention_user=False)
                 logger.info("Responded with barcode log error summary synthesis in thread_ts=%s", thread_ts)
             except TimeoutError:
                 logger.warning("Barcode log error summary synthesis timed out")
+                fallback_text = _build_barcode_log_error_summary_fallback(summary_payload)
+                if fallback_text:
+                    reply(fallback_text, mention_user=False)
             except RuntimeError as exc:
                 if _is_timeout_error(exc):
                     logger.warning("Barcode log error summary synthesis timed out")
+                    fallback_text = _build_barcode_log_error_summary_fallback(summary_payload)
+                    if fallback_text:
+                        reply(fallback_text, mention_user=False)
                     return
                 logger.exception("Barcode log error summary synthesis failed")
+                fallback_text = _build_barcode_log_error_summary_fallback(summary_payload)
+                if fallback_text:
+                    reply(fallback_text, mention_user=False)
             except Exception:
                 logger.exception("Barcode log error summary synthesis failed")
+                fallback_text = _build_barcode_log_error_summary_fallback(summary_payload)
+                if fallback_text:
+                    reply(fallback_text, mention_user=False)
 
         try:
             s3_request = _extract_s3_request(question)

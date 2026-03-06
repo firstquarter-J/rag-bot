@@ -7,7 +7,7 @@ from typing import Any
 from anthropic import Anthropic
 
 from boxer.core import settings as s
-from boxer.core.llm import _ask_claude, _ask_ollama
+from boxer.core.llm import _ask_claude, _ask_ollama, _ask_ollama_chat
 from boxer.core.utils import _truncate_text
 
 _PHONE_PATTERN = re.compile(r"\b01[016789]-?\d{3,4}-?\d{4}\b")
@@ -93,6 +93,102 @@ def _mask_evidence_payload(payload: Any) -> Any:
 def _serialize_evidence_payload(payload: Any) -> str:
     raw = json.dumps(payload, ensure_ascii=False, default=_json_default, separators=(",", ":"))
     return _truncate_text(raw, max(500, s.LLM_SYNTHESIS_MAX_EVIDENCE_CHARS))
+
+
+def _compact_barcode_log_error_summary_payload(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+
+    route = str(payload.get("route") or "").strip().lower()
+    if route != "barcode_log_error_summary":
+        return payload
+
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    records = payload.get("records") if isinstance(payload.get("records"), list) else []
+    error_groups = payload.get("errorGroups") if isinstance(payload.get("errorGroups"), list) else []
+
+    compact_records: list[dict[str, Any]] = []
+    for record in records[:3]:
+        if not isinstance(record, dict):
+            continue
+
+        compact_restart_events = []
+        for event in (record.get("restartEvents") or [])[:3]:
+            if not isinstance(event, dict):
+                continue
+            compact_restart_events.append(
+                {
+                    "time": event.get("time"),
+                    "label": event.get("label"),
+                    "rawLine": event.get("rawLine"),
+                }
+            )
+
+        compact_error_groups = []
+        for group in (record.get("errorGroups") or [])[:6]:
+            if not isinstance(group, dict):
+                continue
+            compact_error_groups.append(
+                {
+                    "component": group.get("component"),
+                    "signature": group.get("signature"),
+                    "count": group.get("count"),
+                    "sampleTime": group.get("sampleTime"),
+                    "sampleMessage": group.get("sampleMessage"),
+                }
+            )
+
+        compact_error_lines = []
+        for line in (record.get("errorLines") or [])[:6]:
+            if not isinstance(line, dict):
+                continue
+            compact_error_lines.append(
+                {
+                    "time": line.get("time"),
+                    "component": line.get("component"),
+                    "message": line.get("message"),
+                }
+            )
+
+        compact_records.append(
+            {
+                "deviceName": record.get("deviceName"),
+                "hospitalName": record.get("hospitalName"),
+                "roomName": record.get("roomName"),
+                "date": record.get("date"),
+                "sessions": record.get("sessions"),
+                "restartDetected": record.get("restartDetected"),
+                "restartEvents": compact_restart_events,
+                "scanEventCount": record.get("scanEventCount"),
+                "errorLineCount": record.get("errorLineCount"),
+                "errorGroups": compact_error_groups,
+                "errorLines": compact_error_lines,
+            }
+        )
+
+    compact_top_groups = []
+    for group in error_groups[:8]:
+        if not isinstance(group, dict):
+            continue
+        compact_top_groups.append(
+            {
+                "component": group.get("component"),
+                "signature": group.get("signature"),
+                "count": group.get("count"),
+                "sampleTime": group.get("sampleTime"),
+                "sampleMessage": group.get("sampleMessage"),
+            }
+        )
+
+    return {
+        "route": payload.get("route"),
+        "source": payload.get("source"),
+        "request": request,
+        "summary": summary,
+        "records": compact_records,
+        "errorGroups": compact_top_groups,
+    }
 
 
 def _build_route_specific_rules(evidence_payload: Any) -> str:
@@ -218,6 +314,7 @@ def _synthesize_retrieval_answer(
     payload = evidence_payload
     if s.LLM_SYNTHESIS_MASKING_ENABLED:
         payload = _mask_evidence_payload(evidence_payload)
+    payload = _compact_barcode_log_error_summary_payload(payload)
 
     user_input = _build_retrieval_synthesis_input(
         question=question,
@@ -237,6 +334,17 @@ def _synthesize_retrieval_answer(
         )
 
     if normalized_provider == "ollama":
+        route = ""
+        if isinstance(payload, dict):
+            route = str(payload.get("route") or "").strip().lower()
+        if route == "barcode_log_error_summary":
+            return _ask_ollama_chat(
+                user_input,
+                system_prompt=prompt,
+                max_tokens=max_tokens,
+                timeout_sec=ollama_timeout_sec,
+                think=False,
+            )
         return _ask_ollama(
             user_input,
             system_prompt=prompt,
