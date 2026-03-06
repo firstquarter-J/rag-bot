@@ -406,16 +406,26 @@ def create_app() -> App:
             top_component = str(top_group.get("component") or "미확인").strip() if isinstance(top_group, dict) else "미확인"
             top_signature = str(top_group.get("signature") or "미확인").strip() if isinstance(top_group, dict) else "미확인"
             top_count = int(top_group.get("count") or 0) if isinstance(top_group, dict) else 0
+            top_signature_lower = top_signature.lower()
+            top_component_lower = top_component.lower()
+            is_ffmpeg_error = "ffmpeg" in top_signature_lower or "ffmpeg" in top_component_lower
 
             abnormal_count = int(summary.get("abnormalSessionCount") or 0)
             error_line_count = int(summary.get("errorLineCount") or 0)
             restart_count = int(summary.get("restartEventCount") or 0)
 
+            if restart_count > 0:
+                cause_line = "• 핵심 원인: 세션 중 장비 재시작과 녹화 오류가 함께 보여 정상 녹화 실패 가능성이 높아"
+            elif top_signature != "미확인" and top_count >= 2:
+                cause_line = f"• 핵심 원인: `{top_component}`에서 `{top_signature}` 오류가 반복돼 녹화 실패 가능성이 높아"
+            elif top_signature != "미확인" and top_count == 1:
+                cause_line = f"• 핵심 원인: `{top_component}`에서 `{top_signature}` 오류가 1회 확인돼 녹화 영향 여부 점검이 필요해"
+            else:
+                cause_line = "• 핵심 원인: 로그상 주요 에러 1건이 확인돼 원인 점검이 필요해"
+
             lines = [
                 "*에러 분석*",
-                f"• 핵심 원인: 세션 중 장비 재시작과 녹화 오류가 함께 보여 정상 녹화 실패 가능성이 높아"
-                if restart_count > 0
-                else f"• 핵심 원인: `{top_component}`에서 `{top_signature}` 오류가 반복돼 녹화 실패 가능성이 높아",
+                cause_line,
                 f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 비정상 종료 세션 `{abnormal_count}건`, error 라인 `{error_line_count}줄`이 확인됐어",
             ]
 
@@ -429,10 +439,14 @@ def create_app() -> App:
                 lines.extend(evidence_lines)
 
             action_lines: list[str] = []
+            if is_ffmpeg_error:
+                action_lines.append("- 캡처보드 연결 상태와 입력 신호를 가장 먼저 점검")
             if restart_count > 0:
                 action_lines.append("- 전원 차단/전원 버튼 오입력 여부 확인")
             if top_signature != "미확인":
                 action_lines.append(f"- `{top_component}` 관련 장치/프로세스 상태 확인")
+            if is_ffmpeg_error:
+                action_lines.append("- ffmpeg 프로세스 상태와 영상 입력 장치 점유 여부 확인")
             if "Device or resource busy" in top_signature:
                 action_lines.append("- `/dev/video0` 점유 프로세스와 캡처보드 상태 확인")
             if not action_lines:

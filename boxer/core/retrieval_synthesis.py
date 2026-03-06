@@ -211,7 +211,8 @@ def _build_route_specific_rules(evidence_payload: Any) -> str:
             "10) 제공된 evidence만 사용해. 추정이면 반드시 '추정:'으로 시작해.\n"
             "11) 6줄 안팎으로 짧게 끝내. 장황한 설명 금지.\n"
             "12) '근거 로그'는 시간/컴포넌트/핵심 메시지만 짧게 적어.\n"
-            "13) restartEvents가 있으면 세션 중 재시작을 1차 원인 후보로 명확히 적어."
+            "13) restartEvents가 있으면 세션 중 재시작을 1차 원인 후보로 명확히 적어.\n"
+            "14) ffmpeg 관련 오류가 보이면 '권장 조치'의 1순위는 캡처보드 연결 상태와 입력 신호 점검으로 적어."
         )
 
     if route != "barcode_log_analysis":
