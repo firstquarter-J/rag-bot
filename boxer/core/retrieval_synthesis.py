@@ -119,7 +119,7 @@ def _build_route_specific_rules(evidence_payload: Any) -> str:
         "8) If scanned/motion events exist in evidence, render them together under 'scanned 이벤트' as one compact code-block timeline in chronological order.\n"
         "9) The scanned count must count only real scanned tokens (exclude motion entries from the count).\n"
         "10) Do not collapse scanned events into only summary counts.\n"
-        "11) If error lines exist in evidence, list all deduplicated session error lines with time labels in chronological order. Do not summarize away individual lines.\n"
+        "11) If error lines exist in evidence, render them under 'error 라인' as one compact code-block timeline with time labels in chronological order. Do not summarize away individual lines.\n"
         "12) Never omit the date in barcode log analysis answers.\n"
         "13) If evidence contains notionPlaybook/notion references, include a '참고 플레이북' section and cite only those references."
     )
