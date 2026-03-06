@@ -8,6 +8,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from slack_bolt import App
 
 from boxer.adapters.common.slack import MentionPayload, SlackReplyFn, create_slack_app
+from boxer.adapters.company.fun import handle_fun_message
 from boxer.company import settings as cs
 from boxer.company.utils import _extract_barcode
 from boxer.core import settings as s
@@ -851,4 +852,4 @@ def create_app() -> App:
 
         reply("현재는 ping, s3 조회, db 조회 또는 LLM 질문에 응답해")
 
-    return create_slack_app(_handle_company_mention)
+    return create_slack_app(_handle_company_mention, handle_fun_message)
