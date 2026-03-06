@@ -199,19 +199,19 @@ def _build_route_specific_rules(evidence_payload: Any) -> str:
     if route == "barcode_log_error_summary":
         return (
             "\n"
-            "7) This is a barcode log error interpretation task. Do not restate the full raw logs.\n"
-            "8) Answer in this exact section order:\n"
-            "   - *에러 분석*\n"
-            "   - • 핵심 원인:\n"
-            "   - • 영향:\n"
-            "   - • 근거 로그:\n"
-            "   - • 권장 조치:\n"
-            "   - • 확실도:\n"
-            "9) Use only the provided evidence. If something is inferred, explicitly write '추정:'.\n"
-            "10) Keep it concise and operational. Prefer 4~8 bullet lines total.\n"
-            "11) In '근거 로그', cite compactly with time/component/message, not full long blocks.\n"
-            "12) In '권장 조치', suggest practical checks that an operator can do immediately.\n"
-            "13) If restartEvents exist during the session, treat reboot/restart during recording as a primary cause candidate and mention it clearly."
+            "7) 이 작업은 바코드 로그 에러 해석이다. 원문 로그를 길게 다시 쓰지 마.\n"
+            "8) 아래 형식 그대로만 답해:\n"
+            "   *에러 분석*\n"
+            "   • 핵심 원인:\n"
+            "   • 영향:\n"
+            "   • 근거 로그:\n"
+            "   • 권장 조치:\n"
+            "   • 확실도:\n"
+            "9) 반드시 한국어만 사용해. 영어 설명, 자기 사고 과정, 중간 추론, 검토 문장은 절대 쓰지 마.\n"
+            "10) 제공된 evidence만 사용해. 추정이면 반드시 '추정:'으로 시작해.\n"
+            "11) 6줄 안팎으로 짧게 끝내. 장황한 설명 금지.\n"
+            "12) '근거 로그'는 시간/컴포넌트/핵심 메시지만 짧게 적어.\n"
+            "13) restartEvents가 있으면 세션 중 재시작을 1차 원인 후보로 명확히 적어."
         )
 
     if route != "barcode_log_analysis":

@@ -442,6 +442,38 @@ def create_app() -> App:
             lines.append(f"• 확실도: {'높음' if restart_count > 0 or top_count >= 2 else '중간'}")
             return "\n".join(lines)
 
+        def _is_bad_barcode_log_error_summary(text: str) -> bool:
+            normalized = (text or "").strip()
+            if not normalized:
+                return True
+
+            required_markers = ("*에러 분석*", "• 핵심 원인:", "• 영향:", "• 권장 조치:")
+            if any(marker not in normalized for marker in required_markers):
+                return True
+
+            lowered = normalized.lower()
+            bad_patterns = (
+                "</think>",
+                "<think>",
+                "let me",
+                "wait,",
+                "wait ",
+                "i should",
+                "the error",
+                "the user",
+                "now,",
+                "now ",
+                "therefore",
+                "looking at",
+                "based on",
+                "i need",
+                "check if",
+            )
+            if any(pattern in lowered for pattern in bad_patterns):
+                return True
+
+            return False
+
         def _reply_with_barcode_log_error_summary(summary_payload: dict[str, Any] | None) -> None:
             if not isinstance(summary_payload, dict):
                 return
@@ -497,7 +529,7 @@ def create_app() -> App:
                     ollama_timeout_sec=min(90, max(30, s.OLLAMA_TIMEOUT_SEC)),
                 )
                 final_text = (synthesized_text or "").strip()
-                if not final_text:
+                if _is_bad_barcode_log_error_summary(final_text):
                     logger.warning("Barcode log error summary synthesis returned empty text")
                     final_text = _build_barcode_log_error_summary_fallback(summary_payload)
                 if not final_text:

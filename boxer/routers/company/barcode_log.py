@@ -648,7 +648,7 @@ def _append_session_state_summary(
         return
     if not sessions:
         if restart_events:
-            lines.append("• 세션 상태: 마미박스 비정상 종료 추정 (세션 중 재시작 로그만 확인됨)")
+            lines.append("• *세션 상태:* 마미박스 비정상 종료 추정 (세션 중 재시작 로그만 확인됨)")
         return
 
     normal_count = 0
@@ -671,12 +671,12 @@ def _append_session_state_summary(
 
     if len(sessions) <= 1:
         if reboot_count > 0:
-            lines.append("• 세션 상태: 마미박스 비정상 종료 (세션 중 재시작 감지)")
+            lines.append("• *세션 상태:* 마미박스 비정상 종료 (세션 중 재시작 감지)")
             return
         if stop_missing_count > 0:
-            lines.append("• 세션 상태: 정상 종료되지 않음 (종료 스캔 없음)")
+            lines.append("• *세션 상태:* 정상 종료되지 않음 (종료 스캔 없음)")
             return
-        lines.append("• 세션 상태: 정상 종료 (`C_STOPSESS` 확인)")
+        lines.append("• *세션 상태:* 정상 종료 (`C_STOPSESS` 확인)")
         return
 
     status_parts: list[str] = []
@@ -688,10 +688,10 @@ def _append_session_state_summary(
         status_parts.append(f"마미박스 비정상 종료 *{reboot_count}건* (세션 중 재시작 감지)")
 
     if not status_parts:
-        lines.append("• 세션 상태: 판단 불가")
+        lines.append("• *세션 상태:* 판단 불가")
         return
 
-    lines.append(f"• 세션 상태: {', '.join(status_parts)}")
+    lines.append(f"• *세션 상태:* {', '.join(status_parts)}")
 
 
 def _events_in_session(events: list[dict[str, Any]], session: dict[str, Any]) -> list[dict[str, Any]]:

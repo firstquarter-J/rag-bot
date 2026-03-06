@@ -247,9 +247,21 @@ def _query_recordings_detail_by_barcode(
         room_name = _display_value(row.get("roomName"), default="미확인")
         length_label = _format_video_length(row.get("videoLength"))
         streaming_status = _display_value(row.get("streamingStatus"), default="미확인")
-        lines.append(
-            f"- {index}. recordedAt(KST): `{recorded_at_label}` | createdAt(KST): `{created_at_label}` | videoLength: `{length_label}` | streamingStatus: `{streaming_status}` | 병원: `{hospital_name}` | 병실: `{room_name}`"
+        lines.extend(
+            [
+                f"- {index}.",
+                f"  recordedAt(KST): `{recorded_at_label}`",
+                f"  createdAt(KST): `{created_at_label}`",
+                f"  videoLength: `{length_label}`",
+                f"  streamingStatus: `{streaming_status}`",
+                f"  병원: `{hospital_name}`",
+                f"  병실: `{room_name}`",
+                "",
+            ]
         )
+
+    if lines and lines[-1] == "":
+        lines.pop()
 
     if has_more:
         lines.append(f"• 참고: 최근 `{limit}개`만 표시했고 이전 영상은 생략했어")
