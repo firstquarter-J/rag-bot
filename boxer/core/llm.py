@@ -9,7 +9,7 @@ from boxer.core import settings as s
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _REASONING_PREFIX_RE = re.compile(
-    r"^\s*(okay\b|ok\b|let'?s\b|first\b|the user\b|looking at\b|wait\b|now\b|based on\b|i need\b|we need\b|so,?\b|hmm\b)",
+    r"^\s*(okay\b|ok\b|let'?s\b|let me\b|first\b|the user\b|looking at\b|wait\b|now\b|based on\b|i need\b|we need\b|so,?\b|hmm\b|i should\b|check if\b|the evidence\b|each entry\b|therefore\b)",
     re.IGNORECASE,
 )
 _FINAL_SECTION_MARKERS = (
@@ -25,6 +25,11 @@ def _sanitize_ollama_output(text: str) -> str:
     cleaned = _THINK_BLOCK_RE.sub("", text or "").strip()
     if not cleaned:
         return ""
+
+    if "</think>" in cleaned.lower():
+        cleaned = cleaned.rsplit("</think>", 1)[-1].strip()
+        if not cleaned:
+            return ""
 
     for marker in _FINAL_SECTION_MARKERS:
         index = cleaned.find(marker)

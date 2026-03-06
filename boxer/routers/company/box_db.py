@@ -213,6 +213,50 @@ def _query_recordings_list_by_barcode(
     return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
 
 
+def _query_recordings_detail_by_barcode(
+    barcode: str,
+    recordings_context: dict[str, Any] | None = None,
+) -> str:
+    context = recordings_context or _load_recordings_context_by_barcode(barcode)
+    summary = context.get("summary") or {}
+    total_rows = int(summary.get("recordingCount") or 0)
+    rows = context.get("rows") or []
+    has_more = bool(context.get("has_more"))
+    limit = int(context.get("limit") or _context_limit())
+
+    if total_rows <= 0 or not rows:
+        return (
+            "*바코드 영상별 정보 조회 결과*\n"
+            f"• 바코드: `{barcode}`\n"
+            "• 결과: 영상 기록이 없어"
+        )
+
+    lines = [
+        "*바코드 영상별 정보 조회 결과*",
+        f"• 바코드: `{barcode}`",
+        f"• recordings row 수: *{total_rows}개*",
+        "• 영상별 정보(최근순):",
+    ]
+
+    for index, row in enumerate(rows, start=1):
+        recorded_at = row.get("recordedAt")
+        created_at = row.get("createdAt")
+        recorded_at_label = _format_recorded_at_local(recorded_at) if isinstance(recorded_at, datetime) else "미확인"
+        created_at_label = _format_recorded_at_local(created_at) if isinstance(created_at, datetime) else "미확인"
+        hospital_name = _display_value(row.get("hospitalName"), default="미확인")
+        room_name = _display_value(row.get("roomName"), default="미확인")
+        length_label = _format_video_length(row.get("videoLength"))
+        streaming_status = _display_value(row.get("streamingStatus"), default="미확인")
+        lines.append(
+            f"- {index}. recordedAt(KST): `{recorded_at_label}` | createdAt(KST): `{created_at_label}` | videoLength: `{length_label}` | streamingStatus: `{streaming_status}` | 병원: `{hospital_name}` | 병실: `{room_name}`"
+        )
+
+    if has_more:
+        lines.append(f"• 참고: 최근 `{limit}개`만 표시했고 이전 영상은 생략했어")
+
+    return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
+
+
 def _query_recordings_length_by_barcode(
     barcode: str,
     recordings_context: dict[str, Any] | None = None,

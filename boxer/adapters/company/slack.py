@@ -26,6 +26,7 @@ from boxer.routers.company.barcode_log import (
     _extract_log_date,
     _extract_log_date_with_presence,
     _is_barcode_all_recorded_dates_request,
+    _is_barcode_video_info_request,
     _is_barcode_log_analysis_request,
     _is_barcode_last_recorded_at_request,
     _is_barcode_video_length_request,
@@ -42,6 +43,7 @@ from boxer.routers.company.box_db import (
     _query_all_recorded_dates_by_barcode,
     _query_last_recorded_at_by_barcode,
     _query_recordings_count_by_barcode,
+    _query_recordings_detail_by_barcode,
     _query_recordings_length_by_barcode,
     _query_recordings_length_on_date_by_barcode,
     _query_recordings_list_by_barcode,
@@ -828,6 +830,22 @@ def create_app() -> App:
             except Exception:
                 logger.exception("Barcode video count query failed")
                 reply("영상 개수 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
+            return
+
+        if _is_barcode_video_info_request(question, barcode):
+            try:
+                result_text = _query_recordings_detail_by_barcode(
+                    barcode or "",
+                    recordings_context=_get_recordings_context(),
+                )
+                reply(result_text)
+                logger.info("Responded with barcode video detail in thread_ts=%s barcode=%s", thread_ts, barcode)
+            except (pymysql.MySQLError, RuntimeError):
+                logger.exception("Barcode video detail query failed")
+                reply("영상 정보 조회 중 오류가 발생했어. DB 연결 정보와 네트워크 상태를 확인해줘")
+            except Exception:
+                logger.exception("Barcode video detail query failed")
+                reply("영상 정보 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
             return
 
         if _is_barcode_video_list_request(question, barcode):

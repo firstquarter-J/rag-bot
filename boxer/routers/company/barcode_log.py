@@ -172,6 +172,10 @@ def _is_barcode_video_list_request(question: str, barcode: str | None) -> bool:
         return False
     if _is_barcode_video_count_request(question, barcode):
         return False
+    if _is_barcode_video_length_request(question, barcode):
+        return False
+    if _is_barcode_all_recorded_dates_request(question, barcode):
+        return False
 
     text = (question or "").strip()
     lowered = text.lower()
@@ -192,6 +196,31 @@ def _is_barcode_video_list_request(question: str, barcode: str | None) -> bool:
         token in text for token in ("날짜", "일자")
     )
     return has_list_hint and not has_all_date_hint
+
+
+def _is_barcode_video_info_request(question: str, barcode: str | None) -> bool:
+    if not barcode:
+        return False
+    if _is_barcode_video_count_request(question, barcode):
+        return False
+    if _is_barcode_video_length_request(question, barcode):
+        return False
+    if _is_barcode_all_recorded_dates_request(question, barcode):
+        return False
+
+    text = (question or "").strip()
+    lowered = text.lower()
+
+    if "로그" in text or re.search(r"\blog\b", lowered):
+        return False
+
+    has_video_hint = any(token in text for token in cs.VIDEO_HINT_TOKENS) or any(
+        token in lowered for token in cs.VIDEO_HINT_TOKENS
+    )
+    if not has_video_hint:
+        return False
+
+    return any(token in text for token in ("정보", "상세", "상세정보", "세부", "상태"))
 
 
 def _is_barcode_video_length_request(question: str, barcode: str | None) -> bool:
