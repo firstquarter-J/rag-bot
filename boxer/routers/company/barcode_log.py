@@ -799,6 +799,19 @@ def _events_in_sessions(events: list[dict[str, Any]], sessions: list[dict[str, A
     ]
 
 
+def _error_lines_in_session(
+    error_lines: list[tuple[int, str]],
+    session: dict[str, Any],
+) -> list[tuple[int, str]]:
+    start_line_no = int(session["start_line_no"])
+    end_line_no = int(session["end_line_no"])
+    return [
+        (line_no, content)
+        for (line_no, content) in error_lines
+        if start_line_no <= int(line_no) <= end_line_no
+    ]
+
+
 def _error_lines_in_sessions(
     error_lines: list[tuple[int, str]],
     sessions: list[dict[str, Any]],
@@ -1027,6 +1040,49 @@ def _append_session_timing_summary(
 
     detail_suffix = f" ({', '.join(detail_parts)})" if detail_parts else ""
     lines.append(f"• 첫 ffmpeg 에러: `{error_time}`{detail_suffix}")
+
+
+def _append_session_sections(
+    lines: list[str],
+    sessions: list[dict[str, Any]],
+    scan_events: list[dict[str, Any]],
+    motion_events: list[dict[str, Any]],
+    restart_events: list[dict[str, Any]],
+    error_lines: list[tuple[int, str]],
+) -> None:
+    if not sessions:
+        _append_session_state_summary(lines, sessions, restart_events)
+        _append_session_timing_summary(lines, sessions, error_lines)
+        _append_restart_events_section(lines, restart_events)
+        _append_scan_events_section(lines, scan_events, motion_events)
+        _append_error_lines_section(lines, error_lines, show_all=True)
+        return
+
+    if len(sessions) <= 1:
+        _append_session_state_summary(lines, sessions, restart_events)
+        _append_session_timing_summary(lines, sessions, error_lines)
+        _append_restart_events_section(lines, restart_events)
+        _append_scan_events_section(lines, scan_events, motion_events)
+        _append_error_lines_section(lines, error_lines, show_all=True)
+        return
+
+    lines.append(f"• 세션 수: *{len(sessions)}건*")
+
+    for index, session in enumerate(sessions, start=1):
+        session_scan_events = _events_in_session(scan_events, session)
+        session_motion_events = _events_in_session(motion_events, session)
+        session_restart_events = _events_in_session(restart_events, session)
+        session_error_lines = _error_lines_in_session(error_lines, session)
+        start_time = _display_value(session.get("start_time_label"), default="시간미상")
+        stop_time = _display_value(session.get("stop_time_label"), default="미확인")
+
+        lines.append("")
+        lines.append(f"*세션 {index}* (`{start_time}` ~ `{stop_time}`)")
+        _append_session_state_summary(lines, [session], session_restart_events)
+        _append_session_timing_summary(lines, [session], session_error_lines)
+        _append_restart_events_section(lines, session_restart_events)
+        _append_scan_events_section(lines, session_scan_events, session_motion_events)
+        _append_error_lines_section(lines, session_error_lines, show_all=True)
 
 
 def _build_log_analysis_payload(
@@ -1469,14 +1525,13 @@ def _analyze_barcode_log_phase1_window(
             lines.append(f"*장비 `{device_name}` | 날짜 `{date_label}`*")
             lines.append(f"• 병원: `{hospital_name}`")
             lines.append(f"• 병실: `{room_name}`")
-            _append_session_state_summary(lines, sessions, session_restart_events)
-            _append_session_timing_summary(lines, sessions, session_error_lines)
-            _append_restart_events_section(lines, session_restart_events)
-            _append_scan_events_section(lines, session_events, session_motion_events)
-            _append_error_lines_section(
+            _append_session_sections(
                 lines,
+                sessions,
+                session_events,
+                session_motion_events,
+                session_restart_events,
                 session_error_lines,
-                show_all=True,
             )
 
     if found_log_files == 0:
@@ -1618,14 +1673,13 @@ def _analyze_barcode_log_scan_events(
         lines.append(f"• 병실: `{room_name}`")
         lines.append(f"• 날짜: `{log_date}`")
         lines.append(f"• 분석 범위: 전체 `{len(source_lines)}줄`")
-        _append_session_state_summary(lines, sessions, session_restart_events)
-        _append_session_timing_summary(lines, sessions, session_error_lines)
-        _append_restart_events_section(lines, session_restart_events)
-        _append_scan_events_section(lines, session_scoped_events, session_motion_events)
-        _append_error_lines_section(
+        _append_session_sections(
             lines,
+            sessions,
+            session_scoped_events,
+            session_motion_events,
+            session_restart_events,
             session_error_lines,
-            show_all=True,
         )
         devices_with_session += 1
 
@@ -1787,14 +1841,13 @@ def _analyze_barcode_log_errors(
         lines.append(f"• 날짜: `{log_date}`")
         lines.append(f"• 파일 크기: `{_format_size(log_data['content_length'])}`")
         lines.append(f"• 분석 범위: 전체 `{len(source_lines)}줄`")
-        _append_session_state_summary(lines, sessions, session_restart_events)
-        _append_session_timing_summary(lines, sessions, session_error_lines)
-        _append_restart_events_section(lines, session_restart_events)
-        _append_scan_events_section(lines, session_scoped_events, session_motion_events)
-        _append_error_lines_section(
+        _append_session_sections(
             lines,
+            sessions,
+            session_scoped_events,
+            session_motion_events,
+            session_restart_events,
             session_error_lines,
-            show_all=True,
         )
         devices_with_session += 1
 
