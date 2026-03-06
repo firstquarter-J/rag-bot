@@ -582,31 +582,52 @@ def _append_session_state_summary(
 ) -> None:
     if not sessions and not restart_events:
         return
+    if not sessions:
+        if restart_events:
+            lines.append("• 세션 상태: 마미박스 비정상 종료 추정 (세션 중 재시작 로그만 확인됨)")
+        return
 
-    normal_count = sum(1 for session in sessions if session.get("stop_line_no") is not None)
-    abnormal_count = len(sessions) - normal_count
-    restart_count = len(restart_events)
+    normal_count = 0
+    stop_missing_count = 0
+    reboot_count = 0
 
-    if abnormal_count <= 0 and restart_count <= 0:
-        lines.append("• 세션 상태: 모든 세션 정상 종료 (`C_STOPSESS` 확인)")
+    for session in sessions:
+        has_restart = any(
+            int(session["start_line_no"]) <= int(event.get("line_no") or 0) <= int(session["end_line_no"])
+            for event in restart_events
+        )
+        has_stop = session.get("stop_line_no") is not None
+
+        if has_restart:
+            reboot_count += 1
+        elif has_stop:
+            normal_count += 1
+        else:
+            stop_missing_count += 1
+
+    if len(sessions) <= 1:
+        if reboot_count > 0:
+            lines.append("• 세션 상태: 마미박스 비정상 종료 (세션 중 재시작 감지)")
+            return
+        if stop_missing_count > 0:
+            lines.append("• 세션 상태: 정상 종료되지 않음 (종료 스캔 없음)")
+            return
+        lines.append("• 세션 상태: 정상 종료 (`C_STOPSESS` 확인)")
         return
 
     status_parts: list[str] = []
     if normal_count > 0:
         status_parts.append(f"정상 종료 *{normal_count}건*")
-    if abnormal_count > 0:
-        status_parts.append(f"정상 종료되지 않은 세션 *{abnormal_count}건* (`C_STOPSESS` 없음)")
-    if restart_count > 0:
-        status_parts.append(f"세션 중 재시작 *{restart_count}건*")
+    if stop_missing_count > 0:
+        status_parts.append(f"정상 종료되지 않음 *{stop_missing_count}건* (종료 스캔 없음)")
+    if reboot_count > 0:
+        status_parts.append(f"마미박스 비정상 종료 *{reboot_count}건* (세션 중 재시작 감지)")
 
-    if abnormal_count > 0 and restart_count > 0:
-        conclusion = "종료 스캔 누락 또는 재시작으로 정상 녹화가 마무리되지 못했을 가능성이 높아"
-    elif abnormal_count > 0:
-        conclusion = "종료 스캔 없이 마무리됐을 가능성이 있어"
-    else:
-        conclusion = "재시작으로 정상 녹화 실패로 판단해"
+    if not status_parts:
+        lines.append("• 세션 상태: 판단 불가")
+        return
 
-    lines.append(f"• 세션 상태: {', '.join(status_parts)} -> {conclusion}")
+    lines.append(f"• 세션 상태: {', '.join(status_parts)}")
 
 
 def _events_in_session(events: list[dict[str, Any]], session: dict[str, Any]) -> list[dict[str, Any]]:
