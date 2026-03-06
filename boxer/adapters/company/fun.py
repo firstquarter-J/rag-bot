@@ -1,5 +1,4 @@
 import logging
-import random
 import re
 from typing import Any
 
@@ -13,22 +12,6 @@ from boxer.core.llm import _ask_claude, _ask_ollama, _check_ollama_health
 ALLOWED_FUN_CHANNEL_ID = "C0621TL2HSB"
 FUN_LLM_MAX_TOKENS = 48
 FUN_LLM_TIMEOUT_SEC = 8
-GENERIC_FUN_REPLIES = (
-    "또 모대?",
-    "모대 또 왔네?",
-    "모대냐 또?",
-    "또 모대 타임이야?",
-    "모대 모대 또 모대?",
-    "모대? 오늘도 모대?",
-)
-TOPIC_FUN_TEMPLATES = (
-    '"{topic}"도 모대?',
-    '"{topic}" 얘기도 모대?',
-    '결국 "{topic}"도 모대?',
-    '"{topic}"까지 모대?',
-    '이제 "{topic}"도 모대?',
-    '"{topic}" 또 모대?',
-)
 CLAUSE_SPLIT_RE = re.compile(r"[\n\r,.!?~]+")
 MENTION_RE = re.compile(r"<@[^>]+>")
 URL_RE = re.compile(r"https?://\S+")
@@ -86,15 +69,6 @@ def _extract_fun_topic(text: str) -> str | None:
     if len(topic) > 24:
         topic = topic[-24:].strip()
     return topic or None
-
-
-def _build_fun_reply(text: str) -> str:
-    topic = _extract_fun_topic(text)
-    if not topic:
-        return random.choice(GENERIC_FUN_REPLIES)
-    return random.choice(TOPIC_FUN_TEMPLATES).format(topic=topic)
-
-
 def _build_fun_llm_unavailable_reply(summary: str | None = None) -> str:
     base = "LLM 서버가 응답하지 않아 지금은 AI 답변을 생성할 수 없어"
     detail = (summary or "").strip()
@@ -132,7 +106,6 @@ def _generate_fun_reply(
     claude_client: Anthropic | None,
 ) -> tuple[str, str, bool]:
     provider = (s.LLM_PROVIDER or "").lower().strip()
-    fallback = _build_fun_reply(text)
     prompt = _build_fun_llm_prompt(text)
 
     try:
@@ -151,7 +124,7 @@ def _generate_fun_reply(
             sanitized = _sanitize_fun_reply(llm_text)
             if sanitized:
                 return sanitized, "ollama", True
-            return fallback, "fallback_empty", True
+            return _build_fun_llm_unavailable_reply("빈 응답"), "unavailable_empty", False
 
         if provider == "claude" and claude_client is not None:
             llm_text = _ask_claude(
@@ -163,7 +136,7 @@ def _generate_fun_reply(
             sanitized = _sanitize_fun_reply(llm_text)
             if sanitized:
                 return sanitized, "claude", True
-            return fallback, "fallback_empty", True
+            return _build_fun_llm_unavailable_reply("빈 응답"), "unavailable_empty", False
     except TimeoutError:
         logger.warning("Fun reply LLM timeout")
         return _build_fun_llm_unavailable_reply(f"응답 없음 ({FUN_LLM_TIMEOUT_SEC}초 초과)"), "unavailable_timeout", False
