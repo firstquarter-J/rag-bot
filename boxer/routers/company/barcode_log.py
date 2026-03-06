@@ -194,6 +194,26 @@ def _is_barcode_video_list_request(question: str, barcode: str | None) -> bool:
     return has_list_hint and not has_all_date_hint
 
 
+def _is_barcode_video_length_request(question: str, barcode: str | None) -> bool:
+    if not barcode:
+        return False
+
+    text = (question or "").strip()
+    lowered = text.lower()
+
+    if "로그" in text or re.search(r"\blog\b", lowered):
+        return False
+
+    has_video_hint = any(token in text for token in cs.VIDEO_HINT_TOKENS) or any(
+        token in lowered for token in cs.VIDEO_HINT_TOKENS
+    ) or any(token in text for token in ("녹화", "촬영"))
+    if not has_video_hint:
+        return False
+
+    has_length_hint = any(token in text for token in ("길이", "재생시간", "재생 시간", "duration", "videoLength"))
+    return has_length_hint
+
+
 def _is_barcode_last_recorded_at_request(question: str, barcode: str | None) -> bool:
     if not barcode:
         return False
@@ -278,10 +298,25 @@ def _is_barcode_all_recorded_dates_request(question: str, barcode: str | None) -
     has_all_hint = any(token in text for token in ("모든", "전체", "전부", "다")) or any(
         token in lowered for token in ("all", "entire")
     )
+    has_per_video_hint = any(
+        token in text
+        for token in (
+            "영상별",
+            "비디오별",
+            "동영상별",
+            "녹화별",
+            "촬영별",
+            "각 영상",
+            "각 녹화",
+            "각 촬영",
+            "영상마다",
+            "녹화마다",
+        )
+    )
     has_date_hint = any(token in text for token in ("날짜", "일자", "목록", "리스트")) or any(
         token in lowered for token in ("date", "dates", "list")
     )
-    return has_all_hint and has_date_hint
+    return has_date_hint and (has_all_hint or has_per_video_hint)
 
 
 def _find_error_lines(lines: list[str]) -> list[tuple[int, str]]:

@@ -28,6 +28,7 @@ from boxer.routers.company.barcode_log import (
     _is_barcode_all_recorded_dates_request,
     _is_barcode_log_analysis_request,
     _is_barcode_last_recorded_at_request,
+    _is_barcode_video_length_request,
     _is_barcode_video_list_request,
     _is_barcode_video_recorded_on_date_request,
     _is_barcode_video_count_request,
@@ -41,6 +42,8 @@ from boxer.routers.company.box_db import (
     _query_all_recorded_dates_by_barcode,
     _query_last_recorded_at_by_barcode,
     _query_recordings_count_by_barcode,
+    _query_recordings_length_by_barcode,
+    _query_recordings_length_on_date_by_barcode,
     _query_recordings_list_by_barcode,
     _query_recordings_on_date_by_barcode,
 )
@@ -627,6 +630,8 @@ def create_app() -> App:
                     "hospitalName": row.get("hospitalName"),
                     "roomName": row.get("roomName"),
                     "deviceSeq": row.get("deviceSeq"),
+                    "videoLength": row.get("videoLength"),
+                    "streamingStatus": row.get("streamingStatus"),
                     "recordedAt": row.get("recordedAt"),
                     "createdAt": row.get("createdAt"),
                 }
@@ -841,27 +846,49 @@ def create_app() -> App:
                 reply("영상 목록 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
             return
 
+        if _is_barcode_video_length_request(question, barcode):
+            try:
+                context = _get_recordings_context()
+                target_date, has_requested_date = _extract_log_date_with_presence(question)
+                if has_requested_date:
+                    result_text = _query_recordings_length_on_date_by_barcode(
+                        barcode or "",
+                        target_date,
+                        recordings_context=context,
+                    )
+                else:
+                    result_text = _query_recordings_length_by_barcode(
+                        barcode or "",
+                        recordings_context=context,
+                    )
+                reply(result_text)
+                logger.info(
+                    "Responded with barcode video length in thread_ts=%s barcode=%s has_date=%s",
+                    thread_ts,
+                    barcode,
+                    has_requested_date,
+                )
+            except ValueError as exc:
+                reply(f"영상 길이 조회 요청 형식 오류: {exc}")
+            except (pymysql.MySQLError, RuntimeError):
+                logger.exception("Barcode video length query failed")
+                reply("영상 길이 조회 중 오류가 발생했어. DB 연결 정보와 네트워크 상태를 확인해줘")
+            except Exception:
+                logger.exception("Barcode video length query failed")
+                reply("영상 길이 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
+            return
+
         if _is_barcode_all_recorded_dates_request(question, barcode):
             try:
                 result_text = _query_all_recorded_dates_by_barcode(
                     barcode or "",
                     recordings_context=_get_recordings_context(),
                 )
-                context = _get_recordings_context()
-                evidence_payload = {
-                    "route": "barcode_all_recorded_dates",
-                    "source": "box_db.recordings",
-                    "request": {
-                        "barcode": barcode,
-                        "question": question,
-                    },
-                    "queryResult": result_text,
-                }
-                _attach_recordings_context_to_evidence(evidence_payload, context)
-                _reply_with_retrieval_synthesis(
-                    result_text,
-                    evidence_payload,
-                    route_name="barcode all recorded dates",
+                reply(result_text)
+                logger.info(
+                    "Responded with barcode all recorded dates in thread_ts=%s barcode=%s",
+                    thread_ts,
+                    barcode,
                 )
             except (pymysql.MySQLError, RuntimeError):
                 logger.exception("Barcode all recorded dates query failed")

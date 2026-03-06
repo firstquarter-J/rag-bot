@@ -52,6 +52,26 @@ def _format_recorded_at_local(value: object) -> str:
     return _format_datetime(value)
 
 
+def _format_video_length(value: object) -> str:
+    try:
+        total_seconds = int(value)
+    except (TypeError, ValueError):
+        return "미확인"
+
+    if total_seconds < 0:
+        return "미확인"
+
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        human = f"{hours}시간 {minutes}분 {seconds}초"
+    elif minutes > 0:
+        human = f"{minutes}분 {seconds}초"
+    else:
+        human = f"{seconds}초"
+    return f"{total_seconds}초 ({human})"
+
+
 def _to_local_datetime(value: object) -> datetime | None:
     if not isinstance(value, datetime):
         return None
@@ -97,6 +117,8 @@ def _load_recordings_context_by_barcode(barcode: str) -> dict[str, Any]:
                 "r.hospitalSeq, "
                 "r.hospitalRoomSeq, "
                 "r.deviceSeq, "
+                "r.videoLength, "
+                "r.streamingStatus, "
                 "h.hospitalName AS hospitalName, "
                 "hr.roomName AS roomName, "
                 "r.recordedAt, "
@@ -180,8 +202,60 @@ def _query_recordings_list_by_barcode(
 
         hospital_name = _display_value(row.get("hospitalName"), default="미확인")
         room_name = _display_value(row.get("roomName"), default="미확인")
+        streaming_status = _display_value(row.get("streamingStatus"), default="미확인")
         lines.append(
-            f"- {index}. {time_key}(KST): `{time_label}` | 병원: `{hospital_name}` | 병실: `{room_name}`"
+            f"- {index}. {time_key}(KST): `{time_label}` | streamingStatus: `{streaming_status}` | 병원: `{hospital_name}` | 병실: `{room_name}`"
+        )
+
+    if has_more:
+        lines.append(f"• 참고: 최근 `{limit}개`만 표시했고 이전 영상은 생략했어")
+
+    return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
+
+
+def _query_recordings_length_by_barcode(
+    barcode: str,
+    recordings_context: dict[str, Any] | None = None,
+) -> str:
+    context = recordings_context or _load_recordings_context_by_barcode(barcode)
+    summary = context.get("summary") or {}
+    total_rows = int(summary.get("recordingCount") or 0)
+    rows = context.get("rows") or []
+    has_more = bool(context.get("has_more"))
+    limit = int(context.get("limit") or _context_limit())
+
+    if total_rows <= 0 or not rows:
+        return (
+            "*바코드 영상 길이 조회 결과*\n"
+            f"• 바코드: `{barcode}`\n"
+            "• 결과: 영상 기록이 없어"
+        )
+
+    lines = [
+        "*바코드 영상 길이 조회 결과*",
+        f"• 바코드: `{barcode}`",
+        f"• recordings row 수: *{total_rows}개*",
+        "• 영상 길이 목록(최근순):",
+    ]
+
+    for index, row in enumerate(rows, start=1):
+        recorded_at = row.get("recordedAt")
+        created_at = row.get("createdAt")
+        time_label = "미확인"
+        time_key = "recordedAt"
+        if isinstance(recorded_at, datetime):
+            time_label = _format_recorded_at_local(recorded_at)
+            time_key = "recordedAt"
+        elif isinstance(created_at, datetime):
+            time_label = _format_recorded_at_local(created_at)
+            time_key = "createdAt"
+
+        hospital_name = _display_value(row.get("hospitalName"), default="미확인")
+        room_name = _display_value(row.get("roomName"), default="미확인")
+        length_label = _format_video_length(row.get("videoLength"))
+        streaming_status = _display_value(row.get("streamingStatus"), default="미확인")
+        lines.append(
+            f"- {index}. {time_key}(KST): `{time_label}` | videoLength: `{length_label}` | streamingStatus: `{streaming_status}` | 병원: `{hospital_name}` | 병실: `{room_name}`"
         )
 
     if has_more:
@@ -268,6 +342,70 @@ def _query_recordings_on_date_by_barcode(
         f"• 첫 recordedAt(KST): `{_format_recorded_at_local(first_recorded_at)}`\n"
         f"• 마지막 recordedAt(KST): `{_format_recorded_at_local(last_recorded_at)}`"
     ]
+    if has_more:
+        lines.append(f"• 참고: 최근 `{limit}개` 컨텍스트 기준 결과야(전체는 더 있을 수 있어)")
+    return "\n".join(lines)
+
+
+def _query_recordings_length_on_date_by_barcode(
+    barcode: str,
+    target_date: str,
+    recordings_context: dict[str, Any] | None = None,
+) -> str:
+    context = recordings_context or _load_recordings_context_by_barcode(barcode)
+    utc_start, utc_end = _local_date_to_utc_range(target_date)
+    utc_start_aware = utc_start.replace(tzinfo=timezone.utc)
+    utc_end_aware = utc_end.replace(tzinfo=timezone.utc)
+
+    matched_rows: list[dict[str, Any]] = []
+    for row in context.get("rows") or []:
+        recorded_at_utc = _to_utc_datetime(row.get("recordedAt"))
+        if not recorded_at_utc:
+            continue
+        if utc_start_aware <= recorded_at_utc < utc_end_aware:
+            matched_rows.append(row)
+
+    has_more = bool(context.get("has_more"))
+    limit = int(context.get("limit") or _context_limit())
+    if not matched_rows:
+        lines = [
+            "*바코드 날짜별 영상 길이 조회 결과*",
+            f"• 바코드: `{barcode}`",
+            f"• 날짜(KST): `{target_date}`",
+            "• 결과: recordedAt 기준 녹화 기록이 없어",
+        ]
+        if has_more:
+            lines.append(f"• 참고: 최근 `{limit}개` 컨텍스트 기준 결과야(전체는 더 있을 수 있어)")
+        return "\n".join(lines)
+
+    lines = [
+        "*바코드 날짜별 영상 길이 조회 결과*",
+        f"• 바코드: `{barcode}`",
+        f"• 날짜(KST): `{target_date}`",
+        f"• recordings row 수: *{len(matched_rows)}개*",
+        "• 영상 길이 목록:",
+    ]
+
+    for index, row in enumerate(matched_rows, start=1):
+        recorded_at = row.get("recordedAt")
+        created_at = row.get("createdAt")
+        time_label = "미확인"
+        time_key = "recordedAt"
+        if isinstance(recorded_at, datetime):
+            time_label = _format_recorded_at_local(recorded_at)
+            time_key = "recordedAt"
+        elif isinstance(created_at, datetime):
+            time_label = _format_recorded_at_local(created_at)
+            time_key = "createdAt"
+
+        hospital_name = _display_value(row.get("hospitalName"), default="미확인")
+        room_name = _display_value(row.get("roomName"), default="미확인")
+        length_label = _format_video_length(row.get("videoLength"))
+        streaming_status = _display_value(row.get("streamingStatus"), default="미확인")
+        lines.append(
+            f"- {index}. {time_key}(KST): `{time_label}` | videoLength: `{length_label}` | streamingStatus: `{streaming_status}` | 병원: `{hospital_name}` | 병실: `{room_name}`"
+        )
+
     if has_more:
         lines.append(f"• 참고: 최근 `{limit}개` 컨텍스트 기준 결과야(전체는 더 있을 수 있어)")
     return "\n".join(lines)
