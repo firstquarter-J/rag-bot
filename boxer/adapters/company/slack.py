@@ -429,6 +429,7 @@ def create_app() -> App:
             abnormal_count = int(summary.get("abnormalSessionCount") or 0)
             error_line_count = int(summary.get("errorLineCount") or 0)
             restart_count = int(summary.get("restartEventCount") or 0)
+            all_closed_normally = bool((first_record.get("sessions") or {}).get("allClosedNormally"))
 
             if restart_count > 0:
                 cause_line = "• 핵심 원인: 세션 중 장비 재시작과 녹화 오류가 함께 보여 정상 녹화 실패 가능성이 높아"
@@ -444,8 +445,28 @@ def create_app() -> App:
             lines = [
                 "*에러 분석*",
                 cause_line,
-                f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 비정상 종료 세션 `{abnormal_count}건`, error 라인 `{error_line_count}줄`이 확인됐어",
             ]
+            if restart_count > 0:
+                impact_line = (
+                    f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
+                    "세션 중 재시작이 확인돼 정상 녹화 실패 가능성이 높아"
+                )
+            elif abnormal_count > 0:
+                impact_line = (
+                    f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
+                    "종료 스캔이 없는 세션이 있어 정상 녹화 실패 가능성이 높아"
+                )
+            elif is_ffmpeg_error and all_closed_normally:
+                impact_line = (
+                    f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
+                    f"종료 스캔은 확인됐지만 ffmpeg 오류 `{error_line_count}줄`이 있어 영상 손상 가능성이 높아"
+                )
+            else:
+                impact_line = (
+                    f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
+                    f"error 라인 `{error_line_count}줄`이 확인됐어"
+                )
+            lines.append(impact_line)
 
             evidence_lines: list[str] = []
             if restart_count > 0:

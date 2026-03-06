@@ -665,12 +665,16 @@ def _append_session_state_summary(
     lines: list[str],
     sessions: list[dict[str, Any]],
     restart_events: list[dict[str, Any]],
+    session_error_lines: list[tuple[int, str]] | None = None,
 ) -> None:
+    session_error_lines = session_error_lines or []
+
     if not sessions and not restart_events:
         return
     if not sessions:
         if restart_events:
-            lines.append("• *세션 상태:* 마미박스 비정상 종료 추정 (세션 중 재시작 로그만 확인됨)")
+            lines.append("• *종료 상태:* 마미박스 비정상 종료 추정 (세션 중 재시작 로그만 확인됨)")
+            lines.append("• *녹화 결과:* 정상 녹화 실패로 판단")
         return
 
     normal_count = 0
@@ -692,28 +696,67 @@ def _append_session_state_summary(
             stop_missing_count += 1
 
     if len(sessions) <= 1:
+        first_ffmpeg_error = _find_first_ffmpeg_error_context(session_error_lines, sessions)
         if reboot_count > 0:
-            lines.append("• *세션 상태:* 마미박스 비정상 종료 (세션 중 재시작 감지)")
+            lines.append("• *종료 상태:* 마미박스 비정상 종료 (세션 중 재시작 감지)")
+            lines.append("• *녹화 결과:* 정상 녹화 실패로 판단")
             return
         if stop_missing_count > 0:
-            lines.append("• *세션 상태:* 정상 종료되지 않음 (종료 스캔 없음)")
+            lines.append("• *종료 상태:* 비정상 종료 (종료 스캔 없음)")
+            lines.append("• *녹화 결과:* 정상 녹화 실패로 판단")
             return
-        lines.append("• *세션 상태:* 정상 종료 (`C_STOPSESS` 확인)")
+        lines.append("• *종료 상태:* 정상 종료 (`C_STOPSESS` 확인)")
+        if first_ffmpeg_error is not None:
+            error_time = _display_value(first_ffmpeg_error.get("timeLabel"), default="시간미상")
+            elapsed = _display_value(first_ffmpeg_error.get("elapsedFromSessionStart"), default="")
+            detail_parts = [f"첫 ffmpeg 오류 `{error_time}`"]
+            if elapsed:
+                detail_parts.append(f"세션 시작 후 `{elapsed}`")
+            lines.append(f"• *녹화 결과:* 영상 손상 가능성 높음 ({', '.join(detail_parts)})")
+        elif session_error_lines:
+            lines.append(f"• *녹화 결과:* 이상 징후 있음 (error 라인 `{len(session_error_lines)}줄`)")
+        else:
+            lines.append("• *녹화 결과:* 정상 녹화로 판단")
         return
 
-    status_parts: list[str] = []
+    termination_parts: list[str] = []
+    outcome_parts: list[str] = []
     if normal_count > 0:
-        status_parts.append(f"정상 종료 *{normal_count}건*")
+        termination_parts.append(f"정상 종료 *{normal_count}건*")
     if stop_missing_count > 0:
-        status_parts.append(f"정상 종료되지 않음 *{stop_missing_count}건* (종료 스캔 없음)")
+        termination_parts.append(f"비정상 종료 *{stop_missing_count}건* (종료 스캔 없음)")
     if reboot_count > 0:
-        status_parts.append(f"마미박스 비정상 종료 *{reboot_count}건* (세션 중 재시작 감지)")
+        termination_parts.append(f"마미박스 비정상 종료 *{reboot_count}건* (세션 중 재시작 감지)")
 
-    if not status_parts:
-        lines.append("• *세션 상태:* 판단 불가")
+    if reboot_count > 0:
+        outcome_parts.append(f"정상 녹화 실패 *{reboot_count}건* (세션 중 재시작 감지)")
+    if stop_missing_count > 0:
+        outcome_parts.append(f"정상 녹화 실패 *{stop_missing_count}건* (종료 스캔 없음)")
+
+    ffmpeg_affected_count = 0
+    for session in sessions:
+        session_ffmpeg_error = _find_first_ffmpeg_error_context(
+            _error_lines_in_session(session_error_lines, session),
+            [session],
+        )
+        has_restart = any(
+            int(session["start_line_no"]) <= int(event.get("line_no") or 0) <= int(session["end_line_no"])
+            for event in restart_events
+        )
+        has_stop = session.get("stop_line_no") is not None
+        if session_ffmpeg_error is not None and not has_restart and has_stop:
+            ffmpeg_affected_count += 1
+
+    if ffmpeg_affected_count > 0:
+        outcome_parts.append(f"영상 손상 가능성 높음 *{ffmpeg_affected_count}건* (ffmpeg 오류)")
+
+    if not termination_parts:
+        lines.append("• *종료 상태:* 판단 불가")
         return
 
-    lines.append(f"• *세션 상태:* {', '.join(status_parts)}")
+    lines.append(f"• *종료 상태:* {', '.join(termination_parts)}")
+    if outcome_parts:
+        lines.append(f"• *녹화 결과:* {', '.join(outcome_parts)}")
 
 
 def _events_in_session(events: list[dict[str, Any]], session: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1051,7 +1094,7 @@ def _append_session_sections(
     error_lines: list[tuple[int, str]],
 ) -> None:
     if not sessions:
-        _append_session_state_summary(lines, sessions, restart_events)
+        _append_session_state_summary(lines, sessions, restart_events, error_lines)
         _append_session_timing_summary(lines, sessions, error_lines)
         _append_restart_events_section(lines, restart_events)
         _append_scan_events_section(lines, scan_events, motion_events)
@@ -1059,7 +1102,7 @@ def _append_session_sections(
         return
 
     if len(sessions) <= 1:
-        _append_session_state_summary(lines, sessions, restart_events)
+        _append_session_state_summary(lines, sessions, restart_events, error_lines)
         _append_session_timing_summary(lines, sessions, error_lines)
         _append_restart_events_section(lines, restart_events)
         _append_scan_events_section(lines, scan_events, motion_events)
@@ -1078,7 +1121,7 @@ def _append_session_sections(
 
         lines.append("")
         lines.append(f"*세션 {index}* (`{start_time}` ~ `{stop_time}`)")
-        _append_session_state_summary(lines, [session], session_restart_events)
+        _append_session_state_summary(lines, [session], session_restart_events, session_error_lines)
         _append_session_timing_summary(lines, [session], session_error_lines)
         _append_restart_events_section(lines, session_restart_events)
         _append_scan_events_section(lines, session_scan_events, session_motion_events)
