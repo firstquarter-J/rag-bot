@@ -412,6 +412,7 @@ def create_app() -> App:
                 if isinstance(first_ffmpeg_error, dict)
                 else ""
             )
+            recordings_on_date_count = int(first_record.get("recordingsOnDateCount") or 0) if isinstance(first_record, dict) else 0
 
             error_groups = first_record.get("errorGroups") if isinstance(first_record, dict) else []
             session_diagnostics = first_record.get("sessionDiagnostics") if isinstance(first_record, dict) else []
@@ -433,6 +434,28 @@ def create_app() -> App:
             top_count = int(top_group.get("count") or 0) if isinstance(top_group, dict) else 0
             top_signature_lower = top_signature.lower()
             top_component_lower = top_component.lower()
+            all_network_side_effect_errors = bool(error_groups) and all(
+                (
+                    str(group.get("component") or "").strip().lower() in {"endpoint", "endpointclient", "uploader"}
+                    and any(
+                        token in str(group.get("signature") or "").strip().lower()
+                        for token in (
+                            "couldn't renew jwt",
+                            "send status: failed",
+                            "sendcurrentframesnapbase64",
+                            "sendscreenshotbase64",
+                            "senddailylog",
+                            "getaddrinfo eai_again",
+                            "status.kr.mmtalkbox.com",
+                            "stream.kr.mmtalkbox.com",
+                            "couldn't be sent",
+                            "throttling:",
+                        )
+                    )
+                )
+                for group in error_groups
+                if isinstance(group, dict)
+            )
             is_ffmpeg_error = "ffmpeg" in top_signature_lower or "ffmpeg" in top_component_lower
             is_standby_ffmpeg_error = "standby error" in top_signature_lower
             is_ffmpeg_timestamp_error = any(
@@ -447,6 +470,11 @@ def create_app() -> App:
 
             if restart_count > 0:
                 cause_line = "• 핵심 원인: 세션 중 장비 재시작과 녹화 오류가 함께 보여 정상 녹화 실패 가능성이 높아"
+            elif all_network_side_effect_errors and all_closed_normally and not isinstance(severe_session, dict):
+                if recordings_on_date_count > 0:
+                    cause_line = "• 핵심 원인: JWT 갱신/상태 전송/업로드용 서버 통신 오류가 반복됐어. 하지만 날짜 기준 DB 영상 기록이 확인돼 녹화 실패 원인이라기보다 네트워크/DNS 통신 이상으로 봐야 해"
+                else:
+                    cause_line = "• 핵심 원인: 업로드/상태 전송 통신 오류가 반복됐고 날짜 기준 DB 영상 기록이 없어 업로드 실패 가능성을 의심해야 해"
             elif isinstance(severe_session, dict):
                 cause_line = "• 핵심 원인: 초기 ffmpeg 오류보다 종료 처리 지연과 종료 후 장치 오류가 더 뚜렷해서 실제 영상 손상 가능성이 높아"
             elif is_standby_ffmpeg_error and all_closed_normally:
@@ -469,6 +497,17 @@ def create_app() -> App:
                     f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
                     "세션 중 재시작이 확인돼 정상 녹화 실패 가능성이 높아"
                 )
+            elif all_network_side_effect_errors and all_closed_normally and not isinstance(severe_session, dict):
+                if recordings_on_date_count > 0:
+                    impact_line = (
+                        f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
+                        f"녹화 흐름과 종료 스캔은 정상이고 날짜 기준 DB 영상 기록 `{recordings_on_date_count}개`가 확인됐어. 상태 전송/스크린샷/업로드 통신 오류는 별도야"
+                    )
+                else:
+                    impact_line = (
+                        f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
+                        "녹화 흐름과 종료 스캔은 정상인데 업로드/상태 전송 통신 오류가 반복됐고 날짜 기준 DB 영상 기록이 없어 업로드 실패 가능성이 있어"
+                    )
             elif isinstance(severe_session, dict):
                 impact_line = (
                     f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
@@ -521,9 +560,15 @@ def create_app() -> App:
             if evidence_lines:
                 lines.append("• 근거 로그:")
                 lines.extend(evidence_lines)
+            if all_network_side_effect_errors:
+                lines.append(f"- 날짜 기준 DB 영상 기록 `{recordings_on_date_count}개`")
 
             action_lines: list[str] = []
-            if is_ffmpeg_timestamp_error:
+            if all_network_side_effect_errors and all_closed_normally and not isinstance(severe_session, dict):
+                action_lines.append("- 장비 네트워크 상태와 DNS 해석(getaddrinfo EAI_AGAIN) 여부 확인")
+                action_lines.append("- status.kr.mmtalkbox.com / stream.kr.mmtalkbox.com 통신 가능 여부 확인")
+                action_lines.append("- JWT 갱신/상태 전송/업로드 재시도 로그만 별도로 점검")
+            elif is_ffmpeg_timestamp_error:
                 action_lines.append("- 캡처보드 케이블 체결 상태와 장치 교체 테스트를 가장 먼저 진행")
             elif is_ffmpeg_error:
                 action_lines.append("- 캡처보드 연결 상태와 입력 신호를 가장 먼저 점검")

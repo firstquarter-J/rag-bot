@@ -176,6 +176,8 @@ def _compact_barcode_log_error_summary_payload(payload: Any) -> Any:
                 "hospitalName": record.get("hospitalName"),
                 "roomName": record.get("roomName"),
                 "date": record.get("date"),
+                "recordingsOnDateCount": record.get("recordingsOnDateCount"),
+                "recordingsOnDateStatuses": record.get("recordingsOnDateStatuses"),
                 "sessions": record.get("sessions"),
                 "restartDetected": record.get("restartDetected"),
                 "restartEvents": compact_restart_events,
@@ -237,7 +239,10 @@ def _build_route_specific_rules(evidence_payload: Any) -> str:
             "16) 세션 시작 시각과 첫 ffmpeg 오류 시각이 evidence에 있으면 근거 로그에 반드시 같이 적어.\n"
             "17) `C_STOPSESS`가 확인돼 종료는 정상이어도 ffmpeg 오류가 있으면 종료 상태와 녹화 결과를 분리해서 설명해.\n"
             "18) `Standby error`만 있어도 영상 손상 가능성을 의심해야 한다. 이후 녹화 시작 흔적이 있어도 손상 가능성 판단을 제거하지 말고, 실제 영상 확인이 필요하다고 적어.\n"
-            "19) 다만 sessionDiagnostics에 종료 처리 지연, 종료 후 추가 스캔, 종료 후 장치 오류가 있으면 이 신호를 초기 standby error보다 더 강한 이상 징후로 우선 해석해."
+            "19) 다만 sessionDiagnostics에 종료 처리 지연, 종료 후 추가 스캔, 종료 후 장치 오류가 있으면 이 신호를 초기 standby error보다 더 강한 이상 징후로 우선 해석해.\n"
+            "20) `Couldn't renew JWT`, `Send Status: Failed`, `sendScreenShotBase64`, `sendCurrentFrameSnapBase64`, `sendDailyLog`, `Uploader ... couldn't be sent`, `getaddrinfo EAI_AGAIN` 같은 Endpoint/Uploader 통신 오류는 그것만으로 녹화 실패 원인이라고 판단하지 마.\n"
+            "21) 위 통신 오류만 있고 종료 스캔/녹화 흐름이 정상이라면, 녹화 실패가 아니라 상태 전송/스크린샷/업로드 통신 오류로 설명해.\n"
+            "22) evidence에 날짜 기준 DB 영상 기록(recordingsOnDateCount)이 있으면 반드시 같이 해석해. DB 영상 기록이 있으면 업로드 최종 성공 근거로 보고, 없으면 업로드 실패 가능성을 언급해.\n"
         )
 
     if route != "barcode_log_analysis":

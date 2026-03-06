@@ -410,6 +410,43 @@ def _query_recordings_on_date_by_barcode(
     return "\n".join(lines)
 
 
+def _load_recordings_rows_on_date_by_barcode(
+    barcode: str,
+    target_date: str,
+    *,
+    device_seq: int | None = None,
+) -> list[dict[str, Any]]:
+    if not s.DB_HOST or not s.DB_USERNAME or not s.DB_PASSWORD or not s.DB_DATABASE:
+        raise RuntimeError("DB 접속 정보(DB_*)가 비어 있어")
+
+    utc_start, utc_end = _local_date_to_utc_range(target_date)
+    connection = _create_db_connection(s.DB_QUERY_TIMEOUT_SEC)
+    try:
+        with connection.cursor() as cursor:
+            sql = (
+                "SELECT "
+                "r.seq, "
+                "r.deviceSeq, "
+                "r.videoLength, "
+                "r.streamingStatus, "
+                "r.recordedAt, "
+                "r.createdAt "
+                "FROM recordings r "
+                "WHERE r.fullBarcode = %s "
+                "AND r.recordedAt >= %s "
+                "AND r.recordedAt < %s "
+            )
+            params: list[Any] = [barcode, utc_start, utc_end]
+            if device_seq is not None:
+                sql += "AND r.deviceSeq = %s "
+                params.append(device_seq)
+            sql += "ORDER BY COALESCE(r.recordedAt, r.createdAt) DESC, r.seq DESC"
+            cursor.execute(sql, tuple(params))
+            return cursor.fetchall() or []
+    finally:
+        connection.close()
+
+
 def _query_recordings_length_on_date_by_barcode(
     barcode: str,
     target_date: str,

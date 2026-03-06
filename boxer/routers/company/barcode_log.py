@@ -7,7 +7,10 @@ from zoneinfo import ZoneInfo
 from boxer.company import settings as cs
 from boxer.core import settings as s
 from boxer.core.utils import _display_value, _format_size, _truncate_text
-from boxer.routers.company.box_db import _lookup_device_contexts_by_barcode
+from boxer.routers.company.box_db import (
+    _load_recordings_rows_on_date_by_barcode,
+    _lookup_device_contexts_by_barcode,
+)
 from boxer.routers.company.s3_domain import _fetch_s3_device_log_lines
 
 _NUMERIC_YMD_PATTERN = re.compile(r"(?<!\d)(\d{2,4})\s*[-./]\s*(\d{1,2})\s*[-./]\s*(\d{1,2})(?!\d)")
@@ -732,6 +735,7 @@ def _append_session_state_summary(
     restart_events: list[dict[str, Any]],
     session_error_lines: list[tuple[int, str]] | None = None,
     diagnostic_scan_events: list[dict[str, Any]] | None = None,
+    recordings_on_date_count: int | None = None,
 ) -> None:
     session_error_lines = session_error_lines or []
     diagnostic_scan_events = diagnostic_scan_events or []
@@ -779,6 +783,7 @@ def _append_session_state_summary(
             restart_events,
             session_error_lines,
             diagnostic_scan_events,
+            recordings_on_date_count=recordings_on_date_count,
         )
         lines.append(f"• *녹화 결과:* {recording_result}")
         if isinstance(post_stop_context, dict):
@@ -1126,6 +1131,7 @@ def _build_session_recording_result_text(
     restart_events: list[dict[str, Any]],
     session_error_lines: list[tuple[int, str]],
     scan_events: list[dict[str, Any]] | None = None,
+    recordings_on_date_count: int | None = None,
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
     has_restart = any(
         int(session["start_line_no"]) <= int(event.get("line_no") or 0) <= int(session["end_line_no"])
@@ -1190,6 +1196,25 @@ def _build_session_recording_result_text(
         if elapsed:
             detail_parts.append(f"세션 시작 후 `{elapsed}`")
         return f"영상 손상 가능성 의심 ({', '.join(detail_parts)})", recovery_context, post_stop_context
+    non_recording_network_context = _describe_non_recording_network_error_context(session_error_lines)
+    if non_recording_network_context:
+        if _has_uploader_network_error(session_error_lines) and recordings_on_date_count == 0:
+            return (
+                f"영상 업로드 실패 가능성 높음 ({non_recording_network_context}, 날짜 기준 DB 영상 기록 없음)",
+                recovery_context,
+                post_stop_context,
+            )
+        if recordings_on_date_count and recordings_on_date_count > 0:
+            return (
+                f"정상 녹화로 판단 (날짜 기준 DB 영상 기록 `{recordings_on_date_count}개` 확인, {non_recording_network_context} 별도)",
+                recovery_context,
+                post_stop_context,
+            )
+        return (
+            f"정상 녹화로 판단 ({non_recording_network_context} 별도)",
+            recovery_context,
+            post_stop_context,
+        )
     if session_error_lines:
         return f"이상 징후 있음 (error 라인 `{len(session_error_lines)}줄`)", recovery_context, post_stop_context
     return "정상 녹화로 판단", recovery_context, post_stop_context
@@ -1268,6 +1293,87 @@ def _parse_structured_log_line(line: str) -> dict[str, str]:
         "message": stripped,
         "raw": stripped,
     }
+
+
+def _is_non_recording_network_error_line(content: str) -> bool:
+    parsed = _parse_structured_log_line(content)
+    component = str(parsed.get("component") or "").strip().lower()
+    message = str(parsed.get("message") or "").strip().lower()
+    raw = str(parsed.get("raw") or content or "").strip().lower()
+    combined = " ".join(part for part in (component, message, raw) if part)
+
+    if any(token in combined for token in ("ffmpeg", "/dev/video0", "videodevice : error", "video device : error")):
+        return False
+
+    if component not in {"endpoint", "endpointclient", "uploader"}:
+        return False
+
+    network_hints = (
+        "couldn't renew jwt",
+        "send status: failed",
+        "sendcurrentframesnapbase64",
+        "sendscreenshotbase64",
+        "senddailylog",
+        "getaddrinfo eai_again",
+        "status.kr.mmtalkbox.com",
+        "stream.kr.mmtalkbox.com",
+        "couldn't be sent",
+        "throttling:",
+    )
+    return any(token in combined for token in network_hints)
+
+
+def _describe_non_recording_network_error_context(error_lines: list[tuple[int, str]]) -> str | None:
+    if not error_lines:
+        return None
+    if not all(_is_non_recording_network_error_line(content) for _, content in error_lines):
+        return None
+
+    has_endpoint = False
+    has_uploader = False
+    has_jwt = False
+    has_status = False
+    has_upload = False
+
+    for _, content in error_lines:
+        lowered = str(content or "").lower()
+        if "[endpoint" in lowered or "endpoint]" in lowered or "endpointclient" in lowered:
+            has_endpoint = True
+        if "[uploader" in lowered or "uploader]" in lowered:
+            has_uploader = True
+        if "jwt" in lowered:
+            has_jwt = True
+        if any(token in lowered for token in ("send status", "sendscreenshotbase64", "sendcurrentframesnapbase64", "senddailylog")):
+            has_status = True
+        if "couldn't be sent" in lowered or "stream.kr.mmtalkbox.com" in lowered or "throttling:" in lowered:
+            has_upload = True
+
+    parts: list[str] = []
+    if has_jwt or has_status:
+        parts.append("JWT/상태 전송 통신 오류")
+    if has_upload:
+        parts.append("업로드 통신 오류")
+    if not parts and has_endpoint:
+        parts.append("서버 통신 오류")
+    if not parts and has_uploader:
+        parts.append("업로드 오류")
+    if not parts:
+        parts.append("서버 통신 오류")
+    return ", ".join(parts)
+
+
+def _has_uploader_network_error(error_lines: list[tuple[int, str]]) -> bool:
+    for _, content in error_lines:
+        parsed = _parse_structured_log_line(content)
+        component = str(parsed.get("component") or "").strip().lower()
+        message = str(parsed.get("message") or "").strip().lower()
+        raw = str(parsed.get("raw") or content or "").strip().lower()
+        combined = " ".join(part for part in (component, message, raw) if part)
+        if component != "uploader":
+            continue
+        if any(token in combined for token in ("couldn't be sent", "throttling:", "stream.kr.mmtalkbox.com", "getaddrinfo eai_again")):
+            return True
+    return False
 
 
 def _serialize_scan_events_for_evidence(scan_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1383,6 +1489,8 @@ def _build_log_analysis_record(
     session_motions: list[dict[str, Any]],
     session_restarts: list[dict[str, Any]],
     session_error_lines: list[tuple[int, str]],
+    recordings_on_date_count: int = 0,
+    recordings_on_date_statuses: list[str] | None = None,
 ) -> dict[str, Any]:
     closure = _session_closure_counts(sessions)
     scan_items = _serialize_scan_events_for_evidence(session_scans)
@@ -1441,6 +1549,8 @@ def _build_log_analysis_record(
         "errorGroups": _build_error_groups(error_items),
         "firstFfmpegError": first_ffmpeg_error,
         "sessionDiagnostics": session_diagnostics,
+        "recordingsOnDateCount": int(recordings_on_date_count),
+        "recordingsOnDateStatuses": recordings_on_date_statuses or [],
     }
 
 
@@ -1484,6 +1594,7 @@ def _append_session_sections(
     restart_events: list[dict[str, Any]],
     error_lines: list[tuple[int, str]],
     diagnostic_scan_events: list[dict[str, Any]] | None = None,
+    recordings_on_date_count: int | None = None,
 ) -> None:
     diagnostic_scan_events = diagnostic_scan_events or scan_events
     if not sessions:
@@ -1494,6 +1605,7 @@ def _append_session_sections(
             restart_events,
             error_lines,
             diagnostic_scan_events,
+            recordings_on_date_count,
         )
         _append_session_timing_summary(lines, sessions, error_lines)
         _append_restart_events_section(lines, restart_events)
@@ -1509,6 +1621,7 @@ def _append_session_sections(
             restart_events,
             error_lines,
             diagnostic_scan_events,
+            recordings_on_date_count,
         )
         _append_session_timing_summary(lines, sessions, error_lines)
         _append_restart_events_section(lines, restart_events)
@@ -1535,6 +1648,7 @@ def _append_session_sections(
             session_restart_events,
             session_error_lines,
             diagnostic_scan_events,
+            recordings_on_date_count if len(sessions) == 1 else None,
         )
         _append_session_timing_summary(lines, [session], session_error_lines)
         _append_restart_events_section(lines, session_restart_events)
@@ -1892,6 +2006,7 @@ def _analyze_barcode_log_phase1_window(
     target_device_contexts = device_contexts[:max_devices]
     omitted_device_count = max(0, len(device_contexts) - len(target_device_contexts))
     target_date_labels = _iter_date_labels(start_date, end_date)
+    use_db_upload_cross_check = recordings_context is not None and day_span <= 1
 
     found_log_files = 0
     matched_scope_count = 0
@@ -1911,6 +2026,22 @@ def _analyze_barcode_log_phase1_window(
             device_name = str(device_context.get("deviceName") or "")
             if not device_name:
                 continue
+            device_seq = device_context.get("deviceSeq")
+            recordings_on_date_rows = (
+                _load_recordings_rows_on_date_by_barcode(
+                    barcode,
+                    date_label,
+                    device_seq=int(device_seq) if device_seq is not None else None,
+                )
+                if barcode and use_db_upload_cross_check
+                else []
+            )
+            recordings_on_date_statuses = sorted(
+                {
+                    _display_value(row.get("streamingStatus"), default="미확인")
+                    for row in recordings_on_date_rows
+                }
+            )
 
             log_data = _fetch_s3_device_log_lines(
                 s3_client,
@@ -1977,6 +2108,8 @@ def _analyze_barcode_log_phase1_window(
                     session_motions=session_motion_events,
                     session_restarts=session_restart_events,
                     session_error_lines=session_error_lines,
+                    recordings_on_date_count=len(recordings_on_date_rows),
+                    recordings_on_date_statuses=recordings_on_date_statuses,
                 )
             )
 
@@ -1984,6 +2117,7 @@ def _analyze_barcode_log_phase1_window(
             lines.append(f"*장비 `{device_name}` | 날짜 `{date_label}`*")
             lines.append(f"• 병원: `{hospital_name}`")
             lines.append(f"• 병실: `{room_name}`")
+            lines.append(f"• DB 영상 기록(날짜 기준): `{len(recordings_on_date_rows)}개`")
             _append_session_sections(
                 lines,
                 source_lines,
@@ -1993,6 +2127,7 @@ def _analyze_barcode_log_phase1_window(
                 session_restart_events,
                 session_error_lines,
                 diagnostic_scan_events=events,
+                recordings_on_date_count=len(recordings_on_date_rows),
             )
 
     if found_log_files == 0:
@@ -2072,6 +2207,22 @@ def _analyze_barcode_log_scan_events(
         device_name = str(device_context.get("deviceName") or "")
         if not device_name:
             continue
+        device_seq = device_context.get("deviceSeq")
+        recordings_on_date_rows = (
+            _load_recordings_rows_on_date_by_barcode(
+                barcode,
+                log_date,
+                device_seq=int(device_seq) if device_seq is not None else None,
+            )
+            if barcode and recordings_context is not None
+            else []
+        )
+        recordings_on_date_statuses = sorted(
+            {
+                _display_value(row.get("streamingStatus"), default="미확인")
+                for row in recordings_on_date_rows
+            }
+        )
 
         log_data = _fetch_s3_device_log_lines(
             s3_client,
@@ -2128,6 +2279,8 @@ def _analyze_barcode_log_scan_events(
                 session_motions=session_motion_events,
                 session_restarts=session_restart_events,
                 session_error_lines=session_error_lines,
+                recordings_on_date_count=len(recordings_on_date_rows),
+                recordings_on_date_statuses=recordings_on_date_statuses,
             )
         )
 
@@ -2135,6 +2288,7 @@ def _analyze_barcode_log_scan_events(
         lines.append(f"• 병원: `{hospital_name}`")
         lines.append(f"• 병실: `{room_name}`")
         lines.append(f"• 날짜: `{log_date}`")
+        lines.append(f"• DB 영상 기록(날짜 기준): `{len(recordings_on_date_rows)}개`")
         lines.append(f"• 분석 범위: 전체 `{len(source_lines)}줄`")
         _append_session_sections(
             lines,
@@ -2145,6 +2299,7 @@ def _analyze_barcode_log_scan_events(
             session_restart_events,
             session_error_lines,
             diagnostic_scan_events=events,
+            recordings_on_date_count=len(recordings_on_date_rows),
         )
         devices_with_session += 1
 
@@ -2242,6 +2397,22 @@ def _analyze_barcode_log_errors(
         device_name = str(device_context.get("deviceName") or "")
         if not device_name:
             continue
+        device_seq = device_context.get("deviceSeq")
+        recordings_on_date_rows = (
+            _load_recordings_rows_on_date_by_barcode(
+                barcode,
+                log_date,
+                device_seq=int(device_seq) if device_seq is not None else None,
+            )
+            if barcode and recordings_context is not None
+            else []
+        )
+        recordings_on_date_statuses = sorted(
+            {
+                _display_value(row.get("streamingStatus"), default="미확인")
+                for row in recordings_on_date_rows
+            }
+        )
 
         log_data = _fetch_s3_device_log_lines(
             s3_client,
@@ -2299,6 +2470,8 @@ def _analyze_barcode_log_errors(
                 session_motions=session_motion_events,
                 session_restarts=session_restart_events,
                 session_error_lines=session_error_lines,
+                recordings_on_date_count=len(recordings_on_date_rows),
+                recordings_on_date_statuses=recordings_on_date_statuses,
             )
         )
 
@@ -2306,6 +2479,7 @@ def _analyze_barcode_log_errors(
         lines.append(f"• 병원: `{hospital_name}`")
         lines.append(f"• 병실: `{room_name}`")
         lines.append(f"• 날짜: `{log_date}`")
+        lines.append(f"• DB 영상 기록(날짜 기준): `{len(recordings_on_date_rows)}개`")
         lines.append(f"• 파일 크기: `{_format_size(log_data['content_length'])}`")
         lines.append(f"• 분석 범위: 전체 `{len(source_lines)}줄`")
         _append_session_sections(
@@ -2317,6 +2491,7 @@ def _analyze_barcode_log_errors(
             session_restart_events,
             session_error_lines,
             diagnostic_scan_events=events,
+            recordings_on_date_count=len(recordings_on_date_rows),
         )
         devices_with_session += 1
 
