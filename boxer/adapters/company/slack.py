@@ -852,4 +852,18 @@ def create_app() -> App:
 
         reply("현재는 ping, s3 조회, db 조회 또는 LLM 질문에 응답해")
 
-    return create_slack_app(_handle_company_mention, handle_fun_message)
+    def _handle_company_message(
+        payload: Any,
+        reply: Any,
+        client: Any,
+        logger: logging.Logger,
+    ) -> None:
+        handle_fun_message(
+            payload,
+            reply,
+            client,
+            logger,
+            claude_client=claude_client,
+        )
+
+    return create_slack_app(_handle_company_mention, _handle_company_message)

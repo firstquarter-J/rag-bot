@@ -7,11 +7,17 @@ from anthropic import Anthropic
 from boxer.core import settings as s
 
 
-def _ask_claude(client: Anthropic, question: str, system_prompt: str | None = None) -> str:
+def _ask_claude(
+    client: Anthropic,
+    question: str,
+    system_prompt: str | None = None,
+    *,
+    max_tokens: int | None = None,
+) -> str:
     prompt = (system_prompt or s.DEFAULT_SYSTEM_PROMPT).strip()
     result = client.messages.create(
         model=s.ANTHROPIC_MODEL,
-        max_tokens=s.ANTHROPIC_MAX_TOKENS,
+        max_tokens=max_tokens or s.ANTHROPIC_MAX_TOKENS,
         system=prompt,
         messages=[{"role": "user", "content": question}],
     )
@@ -23,16 +29,28 @@ def _ask_claude(client: Anthropic, question: str, system_prompt: str | None = No
     return "".join(text_blocks).strip()
 
 
-def _ask_ollama(question: str, system_prompt: str | None = None) -> str:
+def _ask_ollama(
+    question: str,
+    system_prompt: str | None = None,
+    *,
+    timeout_sec: int | None = None,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> str:
     prompt = (system_prompt or s.DEFAULT_SYSTEM_PROMPT).strip()
+    actual_timeout = max(1, timeout_sec if timeout_sec is not None else s.OLLAMA_TIMEOUT_SEC)
+    actual_temperature = s.OLLAMA_TEMPERATURE if temperature is None else temperature
+    options: dict[str, int | float] = {
+        "temperature": actual_temperature,
+    }
+    if max_tokens is not None and max_tokens > 0:
+        options["num_predict"] = max_tokens
     payload = {
         "model": s.OLLAMA_MODEL,
         "system": prompt,
         "prompt": question,
         "stream": False,
-        "options": {
-            "temperature": s.OLLAMA_TEMPERATURE,
-        },
+        "options": options,
     }
     req = request.Request(
         url=f"{s.OLLAMA_BASE_URL}/api/generate",
@@ -41,16 +59,16 @@ def _ask_ollama(question: str, system_prompt: str | None = None) -> str:
         method="POST",
     )
     try:
-        with request.urlopen(req, timeout=s.OLLAMA_TIMEOUT_SEC) as response:
+        with request.urlopen(req, timeout=actual_timeout) as response:
             body = response.read().decode("utf-8")
     except TimeoutError as exc:
-        raise TimeoutError(f"Ollama API timed out after {s.OLLAMA_TIMEOUT_SEC}s") from exc
+        raise TimeoutError(f"Ollama API timed out after {actual_timeout}s") from exc
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"Ollama API HTTP {exc.code}: {detail[:200]}") from exc
     except error.URLError as exc:
         if "timed out" in str(exc.reason).lower():
-            raise TimeoutError(f"Ollama API timed out after {s.OLLAMA_TIMEOUT_SEC}s") from exc
+            raise TimeoutError(f"Ollama API timed out after {actual_timeout}s") from exc
         raise RuntimeError(f"Ollama API connection failed: {exc.reason}") from exc
 
     try:
