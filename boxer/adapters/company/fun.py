@@ -24,16 +24,96 @@ FUN_BAD_REPLY_RE = re.compile(
     r"(okay|let'?s|the user|i think|저는|나는|제가|설명|해설|안녕하세요|반갑|도와|죄송|미안|예시|출력 규칙)",
     re.IGNORECASE,
 )
+FUN_TEMPLATE_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        ("욕", "화내", "짜증", "분노"),
+        (
+            "말 좀 곱게 하지 모대?",
+            "입이 너무 매운 거 모대?",
+            "말로 좀 풀면 안 되모대?",
+        ),
+    ),
+    (
+        ("다이어트", "살빼", "식단", "헬스", "운동", "체중"),
+        (
+            "다이어트도 쉽지 모대?",
+            "식단도 작심삼일 모대?",
+            "살 빼는 게 말뿐 모대?",
+        ),
+    ),
+    (
+        ("연애", "썸", "소개팅", "고백", "플러팅", "뽀뽀"),
+        (
+            "연애도 쉽지 모대?",
+            "썸도 뜻대로 안 되모대?",
+            "마음대로 되는 게 모대?",
+        ),
+    ),
+    (
+        ("로그인", "로그아웃", "비번", "비밀번호", "아이디", "인증", "otp", "패스워드"),
+        (
+            "로그인도 버벅이지 모대?",
+            "비번도 매번 헷갈리모대?",
+            "인증도 한 번에 안 되모대?",
+        ),
+    ),
+    (
+        ("밥", "먹", "점심", "저녁", "야식", "치킨", "피자", "햄버거"),
+        (
+            "밥도 잘 먹지 모대?",
+            "먹는 건 또 진심이모대?",
+            "야식도 못 참지 모대?",
+        ),
+    ),
+    (
+        ("잠", "졸", "수면", "밤샘", "기절"),
+        (
+            "잠도 참기 힘들지 모대?",
+            "눈꺼풀도 파업 모대?",
+            "잠 앞에서는 장사 없모대?",
+        ),
+    ),
+    (
+        ("커피", "카페인", "아아", "라떼"),
+        (
+            "커피 없인 안 되모대?",
+            "카페인도 생명수 모대?",
+            "아아로 연명하모대?",
+        ),
+    ),
+    (
+        ("출근", "퇴근", "야근", "월급", "회의", "업무", "일", "보고"),
+        (
+            "일도 사람 뜻대로 안 되모대?",
+            "회의도 끝이 없지 모대?",
+            "출근부터 쉽지 않모대?",
+        ),
+    ),
+    (
+        ("배포", "버그", "에러", "장애", "코드", "리뷰", "리팩터링", "테스트", "커밋", "푸시"),
+        (
+            "배포도 한 번에 안 되모대?",
+            "버그도 눈치 없이 뜨모대?",
+            "코드도 말 안 듣지 모대?",
+        ),
+    ),
+)
+FUN_GENERIC_TEMPLATES: tuple[str, ...] = (
+    "{topic_with_do} 쉽지 모대?",
+    "{topic_with_do} 생각보다 빡세지 모대?",
+    "{topic_with_do} 또 말처럼 되나 모대?",
+    "{topic_with_do} 그냥 되는 줄 알았모대?",
+)
 FUN_SYSTEM_PROMPT = (
-    "너는 슬랙에서 DD를 가볍게 놀리는 짧은 한국어 구절 생성기야. "
-    "입력 문장에 들어 있는 '모대'의 맥락만 써서, 유쾌한 반문형 답글의 앞부분만 만들어. "
+    "너는 슬랙에서 DD를 가볍게 놀리는 짧은 한국어 답글 보정기야. "
+    "기본 템플릿을 더 자연스럽고 유쾌하게 다듬되, 의미는 유지해. "
     "출력 규칙: "
-    "1) 반드시 한국어 짧은 구절만 출력. "
-    "2) 길이 4~14자 정도. "
-    "3) 절대 '모대'나 '?'를 직접 쓰지 마. "
-    "4) 원문의 핵심 단어를 살릴 것. "
-    "5) 영어, 설명, 해설, 자기소개, 따옴표, 이모지, 멘션 금지. "
-    "6) 욕설, 비하, 성적 표현 금지."
+    "1) 반드시 한국어 한 문장만 출력. "
+    "2) 마지막은 반드시 '모대?'로 끝낼 것. "
+    "3) 길이 8~22자 정도. "
+    "4) 영어, 설명, 해설, 자기소개, 따옴표, 이모지, 멘션 금지. "
+    "5) 욕설, 비하, 성적 표현 금지. "
+    "6) 기본 템플릿보다 이상하면 기본 템플릿 그대로 출력."
 )
 
 
@@ -77,12 +157,36 @@ def _extract_fun_topic(text: str) -> str | None:
     if len(topic) > 24:
         topic = topic[-24:].strip()
     return topic or None
-def _build_fun_llm_unavailable_reply(summary: str | None = None) -> str:
-    base = "LLM 서버가 응답하지 않아 지금은 AI 답변을 생성할 수 없어"
-    detail = (summary or "").strip()
-    if not detail:
-        return base
-    return f"{base}\n• 상태: {detail}"
+
+
+def _ensure_topic_suffix(topic: str, suffix: str = "도") -> str:
+    cleaned = topic.strip()
+    if not cleaned:
+        return ""
+    if cleaned.endswith(suffix):
+        return cleaned
+    return f"{cleaned}{suffix}"
+
+
+def _pick_fun_template(seed_text: str, templates: tuple[str, ...]) -> str:
+    if not templates:
+        return ""
+    index = sum(ord(char) for char in seed_text) % len(templates)
+    return templates[index]
+
+
+def _build_fun_template(text: str) -> str:
+    topic = _extract_fun_topic(text) or "그거"
+    compact_topic = topic.replace(" ", "")
+    for keywords, templates in FUN_TEMPLATE_RULES:
+        if any(keyword in compact_topic for keyword in keywords):
+            return _pick_fun_template(compact_topic, templates)
+
+    topic_with_do = _ensure_topic_suffix(topic, "도")
+    if not topic_with_do:
+        return "그거도 쉽지 모대?"
+    template = _pick_fun_template(compact_topic or topic_with_do, FUN_GENERIC_TEMPLATES)
+    return template.format(topic_with_do=topic_with_do)
 
 
 def _sanitize_fun_reply(text: str) -> str:
@@ -94,12 +198,12 @@ def _sanitize_fun_reply(text: str) -> str:
     return cleaned
 
 
-def _finalize_fun_reply(source_text: str, generated_text: str) -> str:
+def _finalize_fun_reply(source_text: str, generated_text: str, fallback_text: str) -> str:
     cleaned = _sanitize_fun_reply(generated_text)
     if not cleaned:
-        return ""
+        return fallback_text
     if FUN_BAD_REPLY_RE.search(cleaned):
-        return ""
+        return fallback_text
 
     cleaned = re.sub(r"^.*(?:->|=>|:)\s*", "", cleaned).strip()
     cleaned = re.split(r"(?:,|\.|!|;|:| 그런데 | 근데 | 하지만 | 그래서 )", cleaned, maxsplit=1)[0].strip()
@@ -109,24 +213,28 @@ def _finalize_fun_reply(source_text: str, generated_text: str) -> str:
     topic = _extract_fun_topic(source_text) or ""
     compact_topic = topic.replace(" ", "")
     compact_cleaned = cleaned.replace(" ", "")
-    if topic and compact_topic not in compact_cleaned:
+    fallback_compact = fallback_text.replace(" ", "")
+    should_prefix_topic = bool(topic) and compact_topic in fallback_compact
+    if should_prefix_topic and compact_topic not in compact_cleaned:
         cleaned = f"{topic} {cleaned}".strip()
 
     cleaned = FUN_REPLY_SANITIZE_RE.sub(" ", cleaned).strip()
     if len(cleaned) < 2 or len(cleaned) > 18:
-        return ""
+        return fallback_text
     return f"{cleaned} 모대?"
 
 
 def _build_fun_llm_prompt(text: str) -> str:
     topic = _extract_fun_topic(text) or "없음"
+    template = _build_fun_template(text)
     return (
         f"원문: {text.strip()}\n"
         f"추출 토픽: {topic}\n"
+        f"기본 템플릿: {template}\n"
         "출력 규칙:\n"
         "- DD를 살짝 놀리는 톤\n"
-        "- 4~14자 정도의 짧은 구절만\n"
-        "- 모대, 물음표, 따옴표 쓰지 마\n"
+        "- 기본 템플릿 의미 유지\n"
+        "- 끝은 반드시 모대?\n"
         "- 영어/설명/자기소개 금지\n"
         "출력:"
     )
@@ -139,6 +247,7 @@ def _generate_fun_reply(
     claude_client: Anthropic | None,
 ) -> tuple[str, str, bool]:
     provider = (s.LLM_PROVIDER or "").lower().strip()
+    fallback_text = _build_fun_template(text)
     prompt = _build_fun_llm_prompt(text)
 
     try:
@@ -148,8 +257,8 @@ def _generate_fun_reply(
                 model=FUN_OLLAMA_MODEL,
             )
             if not health["ok"]:
-                logger.info("Fun reply unavailable: ollama (%s)", health["summary"])
-                return _build_fun_llm_unavailable_reply(str(health["summary"])), "unavailable_ollama", False
+                logger.info("Fun reply fallback template: ollama unavailable (%s)", health["summary"])
+                return fallback_text, "template_unavailable_ollama", True
             llm_text = _ask_ollama_chat(
                 prompt,
                 system_prompt=FUN_SYSTEM_PROMPT,
@@ -159,10 +268,10 @@ def _generate_fun_reply(
                 temperature=0.5,
                 think=False,
             )
-            finalized = _finalize_fun_reply(text, llm_text)
-            if finalized:
-                return finalized, f"ollama:{FUN_OLLAMA_MODEL}", True
-            return _build_fun_llm_unavailable_reply("빈 응답"), "unavailable_empty", False
+            finalized = _finalize_fun_reply(text, llm_text, fallback_text)
+            if finalized == fallback_text:
+                return finalized, f"template_after_ollama:{FUN_OLLAMA_MODEL}", True
+            return finalized, f"ollama:{FUN_OLLAMA_MODEL}", True
 
         if provider == "claude" and claude_client is not None:
             llm_text = _ask_claude(
@@ -171,20 +280,20 @@ def _generate_fun_reply(
                 system_prompt=FUN_SYSTEM_PROMPT,
                 max_tokens=FUN_LLM_MAX_TOKENS,
             )
-            finalized = _finalize_fun_reply(text, llm_text)
-            if finalized:
-                return finalized, "claude", True
-            return _build_fun_llm_unavailable_reply("빈 응답"), "unavailable_empty", False
+            finalized = _finalize_fun_reply(text, llm_text, fallback_text)
+            if finalized == fallback_text:
+                return finalized, "template_after_claude", True
+            return finalized, "claude", True
     except TimeoutError:
         logger.warning("Fun reply LLM timeout")
-        return _build_fun_llm_unavailable_reply(f"응답 없음 ({FUN_LLM_TIMEOUT_SEC}초 초과)"), "unavailable_timeout", False
+        return fallback_text, "template_timeout", True
     except Exception:
         logger.exception("Fun reply LLM failed")
-        return _build_fun_llm_unavailable_reply("호출 실패"), "unavailable_error", False
+        return fallback_text, "template_error", True
 
     if provider == "claude" and claude_client is None:
-        return _build_fun_llm_unavailable_reply("claude 클라이언트 미설정"), "unavailable_claude", False
-    return _build_fun_llm_unavailable_reply("LLM provider 미설정"), "unavailable_provider", False
+        return fallback_text, "template_unavailable_claude", True
+    return fallback_text, "template_no_provider", True
 
 
 def handle_fun_message(
