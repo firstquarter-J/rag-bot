@@ -296,10 +296,24 @@ def _generate_fun_reply(
     return fallback_text, "template_no_provider", True
 
 
+def _is_dd_active(client: Any, logger: logging.Logger) -> bool:
+    if not cs.DD_USER_ID:
+        return False
+    try:
+        response = client.users_getPresence(user=cs.DD_USER_ID)
+    except Exception:
+        logger.exception("Failed to fetch DD presence")
+        return False
+
+    presence = str(response.get("presence") or "").strip().lower()
+    logger.info("DD presence=%s", presence or "unknown")
+    return presence == "active"
+
+
 def handle_fun_message(
     payload: MessagePayload,
     reply: SlackMessageReplyFn,
-    _client: Any,
+    client: Any,
     logger: logging.Logger,
     *,
     claude_client: Anthropic | None = None,
@@ -316,8 +330,10 @@ def handle_fun_message(
         logger,
         claude_client=claude_client,
     )
-    if mention_dd and cs.DD_USER_ID:
+    if mention_dd and cs.DD_USER_ID and _is_dd_active(client, logger):
         reply(f"<@{cs.DD_USER_ID}> {reply_text}", thread=True)
+    elif mention_dd and cs.DD_USER_ID:
+        reply("디디가 오프라인이라 대답하지 않습니다.", thread=True)
     else:
         reply(reply_text, thread=True)
 
