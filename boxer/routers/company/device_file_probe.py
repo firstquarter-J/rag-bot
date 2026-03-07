@@ -43,6 +43,18 @@ _DEVICE_FILE_ID_HINTS = (
     "파일아이디",
 )
 
+_DEVICE_FILE_LIST_HINTS = (
+    "목록",
+    "남은 영상",
+    "남은 파일",
+    "장비에 남은 영상",
+    "장비에 남은 파일",
+    "장비 영상",
+    "로컬 영상",
+    "장비 파일",
+    "로컬 파일",
+)
+
 _DEVICE_FILE_DOWNLOAD_HINTS = (
     "다운로드",
     "받아줘",
@@ -88,6 +100,30 @@ def _should_probe_device_files(question: str) -> bool:
 
 
 def _should_download_device_files(question: str) -> bool:
+    text = (question or "").strip()
+    lowered = text.lower()
+    return any(hint in text or hint in lowered for hint in _DEVICE_FILE_DOWNLOAD_HINTS)
+
+
+def _should_render_compact_device_file_list(question: str) -> bool:
+    text = (question or "").strip()
+    lowered = text.lower()
+    if any(hint in text or hint in lowered for hint in _DEVICE_FILE_ID_HINTS):
+        return False
+    if any(hint in text or hint in lowered for hint in _DEVICE_FILE_DOWNLOAD_HINTS):
+        return False
+    return any(hint in text or hint in lowered for hint in _DEVICE_FILE_LIST_HINTS)
+
+
+def _should_render_compact_file_id_result(question: str) -> bool:
+    text = (question or "").strip()
+    lowered = text.lower()
+    if any(hint in text or hint in lowered for hint in _DEVICE_FILE_DOWNLOAD_HINTS):
+        return False
+    return any(hint in text or hint in lowered for hint in _DEVICE_FILE_ID_HINTS)
+
+
+def _should_render_compact_device_download_result(question: str) -> bool:
     text = (question or "").strip()
     lowered = text.lower()
     return any(hint in text or hint in lowered for hint in _DEVICE_FILE_DOWNLOAD_HINTS)
@@ -474,6 +510,9 @@ def _render_file_candidate_result(
     records: list[dict[str, Any]],
     used_expanded_scope: bool,
     logs_found_any: int,
+    compact_file_list: bool = False,
+    compact_file_id: bool = False,
+    compact_download: bool = False,
 ) -> str:
     if logs_found_any == 0:
         return (
@@ -496,6 +535,149 @@ def _render_file_candidate_result(
         if used_expanded_scope:
             lines.append("• 참고: 매핑 장비에서 세션을 못 찾아 동일 병원 장비까지 확장 검색했어")
         return "\n".join(lines)
+
+    if compact_file_list:
+        lines = [
+            "*장비 파일 목록 조회 결과*",
+            f"• 바코드: `{barcode}`",
+            f"• 날짜: `{log_date}`",
+            f"• 세션이 확인된 장비: `{len(records)}개`",
+        ]
+        if used_expanded_scope:
+            lines.append("• 참고: 매핑 장비에서 세션을 못 찾아 동일 병원 장비까지 확장 검색했어")
+
+        for record in records:
+            lines.append("")
+            lines.append(f"• 장비: `{_display_value(record.get('deviceName'), default='미확인')}`")
+            lines.append(f"• 병원: `{_display_value(record.get('hospitalName'), default='미확인')}`")
+            lines.append(f"• 병실: `{_display_value(record.get('roomName'), default='미확인')}`")
+            file_names: list[str] = []
+            seen: set[str] = set()
+            for session in record.get("sessions") or []:
+                probe = session.get("probe") if isinstance(session.get("probe"), dict) else None
+                if not probe or not probe.get("ok"):
+                    continue
+                for found_file in probe.get("files") or []:
+                    file_name = PurePosixPath(_display_value(found_file, default="")).name
+                    if file_name and file_name not in seen:
+                        seen.add(file_name)
+                        file_names.append(file_name)
+            if file_names:
+                lines.append(f"• 파일 목록: `{len(file_names)}개`")
+                for file_name in file_names:
+                    lines.append(f"  - `{file_name}`")
+            else:
+                record_probe = record.get("deviceProbe") if isinstance(record.get("deviceProbe"), dict) else None
+                if record_probe and not record_probe.get("sshReady"):
+                    lines.append(
+                        f"• 장비 파일 확인: 실패 ({_display_device_probe_reason(record_probe.get('sshReason'))})"
+                    )
+                else:
+                    lines.append("• 파일 목록: `0개`")
+        return _truncate_text("\n".join(lines), 38000)
+
+    if compact_file_id:
+        file_ids: list[str] = []
+        for record in records:
+            for session in record.get("sessions") or []:
+                file_id = _display_value(session.get("fileId"), default="").strip()
+                if file_id and file_id not in file_ids:
+                    file_ids.append(file_id)
+
+        if not file_ids:
+            return (
+                "*fileId 조회 결과*\n"
+                f"• 바코드: `{barcode}`\n"
+                f"• 날짜: `{log_date}`\n"
+                "• fileId: `미추출`"
+            )
+
+        if len(file_ids) == 1:
+            return (
+                "*fileId 조회 결과*\n"
+                f"• fileId: `{file_ids[0]}`"
+            )
+
+        lines = [
+            "*fileId 조회 결과*",
+            f"• fileId: `{len(file_ids)}개`",
+        ]
+        for index, file_id in enumerate(file_ids, start=1):
+            lines.append(f"- 세션 {index}: `{file_id}`")
+        return "\n".join(lines)
+
+    if compact_download:
+        lines = [
+            "*장비 파일 다운로드 결과*",
+            f"• 바코드: `{barcode}`",
+            f"• 날짜: `{log_date}`",
+        ]
+        if used_expanded_scope:
+            lines.append("• 참고: 매핑 장비에서 세션을 못 찾아 동일 병원 장비까지 확장 검색했어")
+
+        for record in records:
+            lines.append("")
+            lines.append(f"• 장비: `{_display_value(record.get('deviceName'), default='미확인')}`")
+            lines.append(f"• 병원: `{_display_value(record.get('hospitalName'), default='미확인')}`")
+            lines.append(f"• 병실: `{_display_value(record.get('roomName'), default='미확인')}`")
+            lines.append(f"• 날짜: `{log_date}`")
+
+            file_names: list[str] = []
+            seen_files: set[str] = set()
+            download_items: list[dict[str, str]] = []
+            seen_downloads: set[str] = set()
+            download_failures: list[str] = []
+
+            for session in record.get("sessions") or []:
+                probe = session.get("probe") if isinstance(session.get("probe"), dict) else None
+                if probe and probe.get("ok"):
+                    for found_file in probe.get("files") or []:
+                        file_name = PurePosixPath(_display_value(found_file, default="")).name
+                        if file_name and file_name not in seen_files:
+                            seen_files.add(file_name)
+                            file_names.append(file_name)
+
+                download = session.get("download") if isinstance(session.get("download"), dict) else None
+                if not download:
+                    continue
+                if download.get("ok"):
+                    for item in download.get("downloads") or []:
+                        if not isinstance(item, dict) or not item.get("ok") or not item.get("url"):
+                            continue
+                        file_name = _display_value(item.get("fileName"), default="파일")
+                        url = _display_value(item.get("url"), default="")
+                        dedupe_key = f"{file_name}|{url}"
+                        if url and dedupe_key not in seen_downloads:
+                            seen_downloads.add(dedupe_key)
+                            download_items.append({"fileName": file_name, "url": url})
+                else:
+                    failure_reason = _display_device_probe_reason(download.get("reason"))
+                    if failure_reason not in download_failures:
+                        download_failures.append(failure_reason)
+
+            if file_names:
+                lines.append(f"• 장비 파일 목록: `{len(file_names)}개`")
+                for file_name in file_names:
+                    lines.append(f"  - `{file_name}`")
+            else:
+                record_probe = record.get("deviceProbe") if isinstance(record.get("deviceProbe"), dict) else None
+                if record_probe and not record_probe.get("sshReady"):
+                    lines.append(
+                        f"• 장비 파일 확인: 실패 ({_display_device_probe_reason(record_probe.get('sshReason'))})"
+                    )
+                else:
+                    lines.append("• 장비 파일 목록: `0개`")
+
+            if download_items:
+                lines.append(f"• 다운로드 링크: `{len(download_items)}개` (1시간)")
+                for item in download_items:
+                    lines.append(f"  - 🎣 <{item['url']}|{item['fileName']}>")
+            elif download_failures:
+                lines.append(f"• 다운로드 준비: 실패 ({', '.join(download_failures)})")
+            else:
+                lines.append("• 다운로드 링크: `0개`")
+
+        return _truncate_text("\n".join(lines), 38000)
 
     lines = [
         "*파일 확인 대상 세션 조회 결과*",
@@ -570,7 +752,7 @@ def _render_file_candidate_result(
                     for item in download_items:
                         file_name = _display_value(item.get("fileName"), default="파일")
                         url = _display_value(item.get("url"), default="")
-                        lines.append(f"  - <{url}|{file_name}>")
+                        lines.append(f"  - 🎣 <{url}|{file_name}>")
                 else:
                     reason = _display_device_probe_reason(download.get("reason"))
                     lines.append(f"• 다운로드 준비: 실패 ({reason})")
@@ -594,6 +776,9 @@ def _locate_barcode_file_candidates(
     device_contexts: list[dict[str, Any]] | None = None,
     probe_remote_files: bool = False,
     download_remote_files: bool = False,
+    compact_file_list: bool = False,
+    compact_file_id: bool = False,
+    compact_download: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     all_device_contexts = device_contexts
     if all_device_contexts is None:
@@ -719,6 +904,9 @@ def _locate_barcode_file_candidates(
         records=records,
         used_expanded_scope=used_expanded_scope,
         logs_found_any=logs_found_any,
+        compact_file_list=compact_file_list,
+        compact_file_id=compact_file_id,
+        compact_download=compact_download,
     )
     payload = {
         "route": "device_file_candidate_lookup",
@@ -729,6 +917,9 @@ def _locate_barcode_file_candidates(
             "usedExpandedScope": used_expanded_scope,
             "probeRemoteFiles": probe_remote_files,
             "downloadRemoteFiles": download_remote_files,
+            "compactFileList": compact_file_list,
+            "compactFileId": compact_file_id,
+            "compactDownload": compact_download,
         },
         "summary": {
             "recordCount": len(records),

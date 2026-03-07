@@ -47,6 +47,9 @@ from boxer.routers.company.device_file_probe import (
     _locate_barcode_file_candidates,
     _should_download_device_files,
     _should_probe_device_files,
+    _should_render_compact_file_id_result,
+    _should_render_compact_device_download_result,
+    _should_render_compact_device_file_list,
 )
 from boxer.routers.company.box_db import (
     _load_recordings_context_by_barcode,
@@ -915,6 +918,9 @@ def create_app() -> App:
 
             probe_remote_files = _should_probe_device_files(question)
             download_remote_files = _should_download_device_files(question)
+            compact_file_id = _should_render_compact_file_id_result(question)
+            compact_file_list = _should_render_compact_device_file_list(question)
+            compact_download = _should_render_compact_device_download_result(question)
             if probe_remote_files and not _is_device_file_probe_allowed(user_id):
                 reply(_build_device_file_probe_permission_message())
                 return
@@ -963,6 +969,9 @@ def create_app() -> App:
                     device_contexts=manual_device_contexts,
                     probe_remote_files=probe_remote_files,
                     download_remote_files=download_remote_files,
+                    compact_file_list=compact_file_list,
+                    compact_file_id=compact_file_id,
+                    compact_download=compact_download,
                 )
                 reply(result_text)
                 logger.info(
