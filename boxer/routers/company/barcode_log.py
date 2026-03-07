@@ -34,11 +34,12 @@ _RESTART_NODE_VERSION_PATTERN = re.compile(r"node\.js version:\s*(.+)$", re.IGNO
 _RESTART_PLATFORM_PATTERN = re.compile(r"platform:\s*(.+)$", re.IGNORECASE)
 _RESTART_START_TIME_PATTERN = re.compile(r"start time:\s*(.+)$", re.IGNORECASE)
 _HOSPITAL_SCOPE_PATTERN = re.compile(
-    r"병원명\s*[:=]?\s*(.+?)(?=\s+(?:병실명|진료실명|날짜|로그|분석)\b|$)"
+    r"(?:^|\s)병원(?:명)?\s*[:=]?\s*(.+?)(?=\s*(?:병실(?:명)?|진료실명|날짜|로그|분석)\s*[:=]?|$)"
 )
 _ROOM_SCOPE_PATTERN = re.compile(
-    r"(?:병실명|진료실명)\s*[:=]?\s*(.+?)(?=\s+(?:날짜|로그|분석)\b|$)"
+    r"(?:^|[\s)])(?:병실(?:명)?|진료실명)\s*[:=]?\s*(.+?)(?=\s*(?:날짜|로그|분석)\s*[:=]?|$)"
 )
+_ROOM_TOKEN_PATTERN = re.compile(r"([^\s`'\",]*(?:진료실|병실)[^\s`'\",]*)")
 _RAW_LOG_LEVEL_PATTERN = re.compile(
     r"^\[[^\]]+\]\s+\[[^\]]+\]\s+\[\s*([A-Za-z]+)\s*\]",
     re.IGNORECASE,
@@ -1835,13 +1836,46 @@ def _extract_hospital_room_scope(question: str) -> tuple[str | None, str | None]
 
     def _clean(value: str) -> str:
         normalized = " ".join(value.split()).strip().strip("`'\"")
+        normalized = re.sub(r"(?<!\d)\d{11}(?!\d)", "", normalized)
         normalized = re.sub(r"\s+\d{2,4}[./-]\d{1,2}[./-]\d{1,2}\s*$", "", normalized)
         normalized = re.sub(r"\s+\d{1,2}\s*월\s*\d{1,2}\s*일\s*$", "", normalized)
+        normalized = re.sub(r"(?<!\d)\d{4}(?!\d)\s*$", "", normalized)
+        normalized = re.sub(r"^\s*병원(?:명)?\s*[:=]?\s*", "", normalized)
+        normalized = re.sub(r"^\s*(?:병실(?:명)?|진료실명)\s*[:=]?\s*", "", normalized)
+        normalized = re.sub(r"^\s*날짜\s*[:=]?\s*", "", normalized)
         normalized = re.sub(r"\s*(?:로그|분석)\s*$", "", normalized)
         return normalized.strip()
 
     hospital_name = _clean(hospital_match.group(1)) if hospital_match else ""
     room_name = _clean(room_match.group(1)) if room_match else ""
+
+    if hospital_name and room_name:
+        return (hospital_name or None, room_name or None)
+
+    fallback_text = text
+    for pattern in (
+        _KOREAN_YMD_PATTERN,
+        _NUMERIC_YMD_PATTERN,
+        _KOREAN_MD_PATTERN,
+        _NUMERIC_MD_PATTERN,
+        _NUMERIC_MD_DASH_PATTERN,
+        _COMPACT_YYYYMMDD_PATTERN,
+        _COMPACT_YYMMDD_PATTERN,
+        _COMPACT_MMDD_PATTERN,
+    ):
+        fallback_text = pattern.sub(" ", fallback_text)
+    fallback_text = re.sub(r"(?<!\d)\d{11}(?!\d)", " ", fallback_text)
+    fallback_text = re.sub(r"\b(?:로그|분석)\b", " ", fallback_text)
+    fallback_text = " ".join(fallback_text.split()).strip()
+
+    room_token_match = _ROOM_TOKEN_PATTERN.search(fallback_text)
+    if not room_name and room_token_match:
+        room_name = _clean(room_token_match.group(1))
+
+    if not hospital_name and room_token_match:
+        hospital_candidate = _clean(fallback_text[: room_token_match.start()])
+        hospital_name = hospital_candidate
+
     return (hospital_name or None, room_name or None)
 
 
