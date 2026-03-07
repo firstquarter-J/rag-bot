@@ -22,6 +22,47 @@ else:
 APP_USER_API_URL = os.getenv("APP_USER_API_URL", "").strip()
 APP_USER_API_TIMEOUT_SEC = int(os.getenv("APP_USER_API_TIMEOUT_SEC", "8"))
 
+MDA_GRAPHQL_URL = os.getenv("MDA_GRAPHQL_URL", "").strip()
+MDA_GRAPHQL_BEARER_TOKEN = os.getenv("MDA_GRAPHQL_BEARER_TOKEN", "").strip()
+MDA_SSH_OPEN_HOST = os.getenv("MDA_SSH_OPEN_HOST", "remotes.mmtalkbox.com").strip()
+MDA_GRAPHQL_ORIGIN = os.getenv("MDA_GRAPHQL_ORIGIN", "https://mda.kr.mmtalkbox.com").strip()
+MDA_GRAPHQL_REFERER = os.getenv("MDA_GRAPHQL_REFERER", "https://mda.kr.mmtalkbox.com/").strip()
+MDA_GRAPHQL_USER_AGENT = os.getenv(
+    "MDA_GRAPHQL_USER_AGENT",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+).strip()
+MDA_API_TIMEOUT_SEC = int(os.getenv("MDA_API_TIMEOUT_SEC", "10"))
+MDA_SSH_POLL_INTERVAL_SEC = int(os.getenv("MDA_SSH_POLL_INTERVAL_SEC", "2"))
+MDA_SSH_POLL_TIMEOUT_SEC = int(os.getenv("MDA_SSH_POLL_TIMEOUT_SEC", "60"))
+MDA_SSH_POLL_RESEND_EVERY = int(os.getenv("MDA_SSH_POLL_RESEND_EVERY", "5"))
+
+DEVICE_SSH_USER = os.getenv("DEVICE_SSH_USER", "mommytalk").strip()
+DEVICE_SSH_PASSWORD = os.getenv("DEVICE_SSH_PASSWORD", "").strip()
+DEVICE_SSH_CONNECT_TIMEOUT_SEC = int(os.getenv("DEVICE_SSH_CONNECT_TIMEOUT_SEC", "8"))
+DEVICE_SSH_COMMAND_TIMEOUT_SEC = int(os.getenv("DEVICE_SSH_COMMAND_TIMEOUT_SEC", "20"))
+DEVICE_FILE_SEARCH_PATHS = [
+    item.strip()
+    for item in os.getenv(
+        "DEVICE_FILE_SEARCH_PATHS",
+        "/home/mommytalk/AppData/Videos,/home/mommytalk/AppData/TrashCan",
+    ).split(",")
+    if item.strip()
+]
+
+_raw_device_file_probe_ids = os.getenv("DEVICE_FILE_PROBE_ALLOWED_USER_IDS", "")
+if _raw_device_file_probe_ids.strip():
+    DEVICE_FILE_PROBE_ALLOWED_USER_IDS = {
+        item.strip()
+        for item in _raw_device_file_probe_ids.split(",")
+        if item.strip()
+    }
+else:
+    DEVICE_FILE_PROBE_ALLOWED_USER_IDS = {
+        user_id
+        for user_id in (HYUN_USER_ID, MARK_USER_ID)
+        if user_id
+    }
+
 
 def apply_legacy_db_compat(core_settings: object) -> None:
     legacy_host = os.getenv("BOX_DB_HOST", "").strip()

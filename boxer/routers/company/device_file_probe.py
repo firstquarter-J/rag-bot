@@ -1,3 +1,5 @@
+import shlex
+import subprocess
 from typing import Any
 
 from boxer.company import settings as cs
@@ -15,15 +17,23 @@ from boxer.routers.company.barcode_log import (
 from boxer.routers.company.box_db import (
     _lookup_device_contexts_by_barcode,
 )
+from boxer.routers.company.mda_graphql import (
+    _get_mda_device_agent_ssh,
+    _is_mda_graphql_configured,
+    _wait_for_mda_device_agent_ssh,
+)
 from boxer.routers.company.s3_domain import _fetch_s3_device_log_lines
 
-_DEVICE_FILE_PROBE_HINTS = (
+_DEVICE_FILE_ID_HINTS = (
     "fileid",
     "file id",
     "파일id",
     "파일 id",
     "파일 아이디",
     "파일아이디",
+)
+
+_DEVICE_FILE_REMOTE_HINTS = (
     "파일 있",
     "파일있",
     "파일 있어",
@@ -40,6 +50,7 @@ _DEVICE_FILE_PROBE_HINTS = (
     "내려받아",
     "복구",
 )
+_DEVICE_FILE_PROBE_HINTS = _DEVICE_FILE_ID_HINTS + _DEVICE_FILE_REMOTE_HINTS
 
 
 def _is_barcode_device_file_probe_request(question: str, barcode: str | None) -> bool:
@@ -48,6 +59,166 @@ def _is_barcode_device_file_probe_request(question: str, barcode: str | None) ->
     text = (question or "").strip()
     lowered = text.lower()
     return any(hint in text or hint in lowered for hint in _DEVICE_FILE_PROBE_HINTS)
+
+
+def _should_probe_device_files(question: str) -> bool:
+    text = (question or "").strip()
+    lowered = text.lower()
+    return any(hint in text or hint in lowered for hint in _DEVICE_FILE_REMOTE_HINTS)
+
+
+def _is_device_file_probe_allowed(user_id: str | None) -> bool:
+    allowed = cs.DEVICE_FILE_PROBE_ALLOWED_USER_IDS
+    if not allowed:
+        return True
+    return bool(user_id and user_id in allowed)
+
+
+def _build_device_file_probe_permission_message() -> str:
+    return "장비 파일 존재 확인은 허용된 사용자만 가능해"
+
+
+def _build_device_file_probe_config_message() -> str:
+    return (
+        "장비 파일 존재 확인 설정이 부족해. "
+        "MDA_GRAPHQL_URL, MDA_GRAPHQL_BEARER_TOKEN, DEVICE_SSH_PASSWORD가 필요해"
+    )
+
+
+def _find_device_files_by_file_id(
+    host: str,
+    port: int,
+    file_id: str,
+) -> dict[str, Any]:
+    if not host or not port or not file_id:
+        return {
+            "ok": False,
+            "reason": "missing_input",
+            "files": [],
+        }
+
+    if not cs.DEVICE_SSH_PASSWORD:
+        return {
+            "ok": False,
+            "reason": "missing_password",
+            "files": [],
+        }
+
+    pattern = f"*{file_id}*.mp4"
+    search_paths = cs.DEVICE_FILE_SEARCH_PATHS or [
+        "/home/mommytalk/AppData/Videos",
+        "/home/mommytalk/AppData/TrashCan",
+    ]
+    path_args = " ".join(shlex.quote(path) for path in search_paths)
+    remote_cmd = (
+        f"find {path_args} -type f -name {shlex.quote(pattern)} 2>/dev/null | sort -u"
+    )
+    command = [
+        "sshpass",
+        "-p",
+        cs.DEVICE_SSH_PASSWORD,
+        "ssh",
+        "-p",
+        str(port),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        f"ConnectTimeout={max(1, cs.DEVICE_SSH_CONNECT_TIMEOUT_SEC)}",
+        f"{cs.DEVICE_SSH_USER}@{host}",
+        remote_cmd,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=max(1, cs.DEVICE_SSH_COMMAND_TIMEOUT_SEC),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "reason": "timeout",
+            "files": [],
+        }
+    except FileNotFoundError:
+        return {
+            "ok": False,
+            "reason": "sshpass_missing",
+            "files": [],
+        }
+
+    stdout = (completed.stdout or "").strip()
+    stderr = (completed.stderr or "").strip()
+    files = [line.strip() for line in stdout.splitlines() if line.strip()]
+    if completed.returncode not in (0, 1):
+        return {
+            "ok": False,
+            "reason": f"ssh_exit_{completed.returncode}",
+            "stderr": stderr[:300],
+            "files": files,
+        }
+
+    return {
+        "ok": True,
+        "reason": "ok",
+        "files": files,
+    }
+
+
+def _probe_device_files_for_record(record: dict[str, Any]) -> dict[str, Any]:
+    device_name = str(record.get("deviceName") or "").strip()
+    if not device_name:
+        return {
+            "sshReady": False,
+            "sshReason": "missing_device_name",
+        }
+
+    wait_result = _wait_for_mda_device_agent_ssh(device_name)
+    device_info = wait_result.get("device") if isinstance(wait_result, dict) else {}
+    agent_ssh = (device_info or {}).get("agentSsh") if isinstance(device_info, dict) else None
+    if not wait_result.get("ready") or not isinstance(agent_ssh, dict):
+        return {
+            "sshReady": False,
+            "sshReason": "agent_ssh_not_ready",
+            "opened": wait_result.get("opened"),
+            "pollCount": wait_result.get("pollCount"),
+        }
+
+    host = str(agent_ssh.get("host") or "").strip()
+    port = agent_ssh.get("port")
+    results: list[dict[str, Any]] = []
+    for session in record.get("sessions") or []:
+        file_id = str(session.get("fileId") or "").strip()
+        if not file_id:
+            results.append(
+                {
+                    "fileId": "",
+                    "ok": False,
+                    "reason": "file_id_missing",
+                    "files": [],
+                }
+            )
+            continue
+        results.append(
+            {
+                "fileId": file_id,
+                **_find_device_files_by_file_id(host, int(port), file_id),
+            }
+        )
+
+    return {
+        "sshReady": True,
+        "sshReason": "ready",
+        "agentSsh": {
+            "host": host,
+            "port": int(port),
+            "status": _display_value(agent_ssh.get("status"), default=""),
+        },
+        "opened": wait_result.get("opened"),
+        "pollCount": wait_result.get("pollCount"),
+        "results": results,
+    }
 
 
 def _build_session_file_candidate_entry(
@@ -79,6 +250,7 @@ def _build_session_file_candidate_entry(
             (first_ffmpeg_error or {}).get("timeLabel"),
             default="",
         ),
+        "probe": None,
     }
 
 
@@ -162,6 +334,30 @@ def _render_file_candidate_result(
             if first_ffmpeg_error_time:
                 lines.append(f"• 첫 ffmpeg 오류: `{first_ffmpeg_error_time}`")
 
+            probe = session.get("probe") if isinstance(session.get("probe"), dict) else None
+            if probe:
+                if probe.get("ok"):
+                    found_files = probe.get("files") or []
+                    lines.append(f"• 장비 파일 확인: `{len(found_files)}개`")
+                    for found_file in found_files:
+                        lines.append(f"  - `{_display_value(found_file, default='')}`")
+                else:
+                    reason = _display_value(probe.get("reason"), default="unknown")
+                    lines.append(f"• 장비 파일 확인: 실패 (`{reason}`)")
+
+        record_probe = record.get("deviceProbe") if isinstance(record.get("deviceProbe"), dict) else None
+        if record_probe:
+            if record_probe.get("sshReady"):
+                agent_ssh = record_probe.get("agentSsh") if isinstance(record_probe.get("agentSsh"), dict) else {}
+                lines.append(
+                    "• 장비 SSH: "
+                    f"`{_display_value(agent_ssh.get('host'), default='미확인')}:{_display_value(agent_ssh.get('port'), default='미확인')}`"
+                )
+            else:
+                lines.append(
+                    f"• 장비 SSH: 실패 (`{_display_value(record_probe.get('sshReason'), default='unknown')}`)"
+                )
+
     return _truncate_text("\n".join(lines), 38000)
 
 
@@ -172,6 +368,7 @@ def _locate_barcode_file_candidates(
     *,
     recordings_context: dict[str, Any] | None = None,
     device_contexts: list[dict[str, Any]] | None = None,
+    probe_remote_files: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     all_device_contexts = device_contexts
     if all_device_contexts is None:
@@ -245,6 +442,7 @@ def _locate_barcode_file_candidates(
                     "roomName": _display_value(device_context.get("roomName"), default="미확인"),
                     "logKey": _display_value(log_data.get("key"), default="미확인"),
                     "sessions": session_entries,
+                    "deviceProbe": None,
                 }
             )
 
@@ -258,6 +456,19 @@ def _locate_barcode_file_candidates(
         if expanded_device_contexts:
             used_expanded_scope = True
             _analyze_batch(expanded_device_contexts[: max(1, min(50, cs.LOG_ANALYSIS_MAX_DEVICES * 4))])
+
+    if probe_remote_files and records:
+        for record in records:
+            device_probe = _probe_device_files_for_record(record)
+            record["deviceProbe"] = device_probe
+            results_by_file_id = {
+                str(item.get("fileId") or "").strip(): item
+                for item in (device_probe.get("results") or [])
+                if isinstance(item, dict)
+            }
+            for session in record.get("sessions") or []:
+                file_id = str(session.get("fileId") or "").strip()
+                session["probe"] = results_by_file_id.get(file_id)
 
     result_text = _render_file_candidate_result(
         barcode=barcode,
@@ -274,6 +485,7 @@ def _locate_barcode_file_candidates(
             "barcode": barcode,
             "date": log_date,
             "usedExpandedScope": used_expanded_scope,
+            "probeRemoteFiles": probe_remote_files,
         },
         "summary": {
             "recordCount": len(records),
