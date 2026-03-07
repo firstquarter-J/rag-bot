@@ -188,6 +188,15 @@ def _split_barcode_log_reply(reply_text: str, max_chars: int = 3000) -> list[str
     return chunks
 
 
+def _extract_latest_barcode_from_thread_context(thread_context: str) -> str | None:
+    lines = [line.strip() for line in (thread_context or "").splitlines() if line.strip()]
+    for line in reversed(lines):
+        barcode = _extract_barcode(line)
+        if barcode:
+            return barcode
+    return None
+
+
 def create_app() -> App:
     cs.apply_legacy_db_compat(s)
     _validate_tokens(include_llm=True, include_data_sources=True)
@@ -670,7 +679,7 @@ def create_app() -> App:
                     provider=provider,
                     claude_client=claude_client,
                     system_prompt=cs.SYSTEM_PROMPT or None,
-                    max_tokens=450,
+                    max_tokens=s.BARCODE_LOG_ERROR_SUMMARY_MAX_TOKENS,
                     ollama_timeout_sec=min(90, max(30, s.OLLAMA_TIMEOUT_SEC)),
                 )
                 final_text = (synthesized_text or "").strip()
@@ -766,6 +775,32 @@ def create_app() -> App:
 
         db_query = _extract_db_query(question)
         barcode = _extract_barcode(question)
+        phase2_hospital_name, phase2_room_name = _extract_hospital_room_scope(question)
+        has_phase2_scope = bool(phase2_hospital_name and phase2_room_name)
+        phase2_has_requested_date = False
+
+        if has_phase2_scope:
+            try:
+                _, phase2_has_requested_date = _extract_log_date_with_presence(question)
+            except ValueError:
+                phase2_has_requested_date = True
+
+        if not barcode and has_phase2_scope and phase2_has_requested_date:
+            thread_context_for_scope = _load_thread_context(
+                client,
+                logger,
+                channel_id,
+                thread_ts,
+                current_ts,
+            )
+            recovered_barcode = _extract_latest_barcode_from_thread_context(thread_context_for_scope)
+            if recovered_barcode:
+                barcode = recovered_barcode
+                logger.info(
+                    "Recovered barcode from thread context for phase2 scope follow-up in thread_ts=%s barcode=%s",
+                    thread_ts,
+                    barcode,
+                )
         recordings_context: dict[str, Any] | None = None
         recordings_context_prefetch_error: Exception | None = None
 
@@ -857,7 +892,9 @@ def create_app() -> App:
             _attach_recordings_context_to_evidence(evidence, context)
             return evidence
 
-        if _is_barcode_log_analysis_request(question, barcode):
+        is_phase2_scope_followup = bool(barcode and has_phase2_scope and phase2_has_requested_date)
+
+        if _is_barcode_log_analysis_request(question, barcode) or is_phase2_scope_followup:
             if not s.S3_QUERY_ENABLED:
                 reply("로그 분석 기능이 꺼져 있어. .env에서 S3_QUERY_ENABLED=true로 설정해줘")
                 return
@@ -874,7 +911,6 @@ def create_app() -> App:
                 summary = context.get("summary") or {}
                 recording_count = int(summary.get("recordingCount") or 0)
                 has_device_mapping = _has_recordings_device_mapping(context)
-                phase2_hospital_name, phase2_room_name = _extract_hospital_room_scope(question)
                 used_manual_scope = False
 
                 if has_requested_date:

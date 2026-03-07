@@ -7,7 +7,7 @@ from typing import Any
 from anthropic import Anthropic
 
 from boxer.core import settings as s
-from boxer.core.llm import _ask_claude, _ask_ollama_chat
+from boxer.core.llm import _ask_claude_with_meta, _ask_ollama_chat
 from boxer.core.utils import _truncate_text
 
 _PHONE_PATTERN = re.compile(r"\b01[016789]-?\d{3,4}-?\d{4}\b")
@@ -357,12 +357,15 @@ def _synthesize_retrieval_answer(
     if normalized_provider == "claude":
         if claude_client is None:
             return ""
-        return _ask_claude(
+        response = _ask_claude_with_meta(
             claude_client,
             user_input,
             system_prompt=prompt,
             max_tokens=max_tokens,
         )
+        if str(response.get("stop_reason") or "").strip().lower() == "max_tokens":
+            return ""
+        return str(response.get("text") or "").strip()
 
     if normalized_provider == "ollama":
         return _ask_ollama_chat(

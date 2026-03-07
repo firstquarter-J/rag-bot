@@ -64,6 +64,21 @@ def _ask_claude(
     *,
     max_tokens: int | None = None,
 ) -> str:
+    return _ask_claude_with_meta(
+        client,
+        question,
+        system_prompt=system_prompt,
+        max_tokens=max_tokens,
+    )["text"]
+
+
+def _ask_claude_with_meta(
+    client: Anthropic,
+    question: str,
+    system_prompt: str | None = None,
+    *,
+    max_tokens: int | None = None,
+) -> dict[str, str]:
     prompt = (system_prompt or s.DEFAULT_SYSTEM_PROMPT).strip()
     result = client.messages.create(
         model=s.ANTHROPIC_MODEL,
@@ -76,7 +91,10 @@ def _ask_claude(
         for block in result.content
         if getattr(block, "type", "") == "text"
     ]
-    return "".join(text_blocks).strip()
+    return {
+        "text": "".join(text_blocks).strip(),
+        "stop_reason": str(getattr(result, "stop_reason", "") or "").strip(),
+    }
 
 
 def _ask_ollama(
