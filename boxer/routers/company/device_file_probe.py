@@ -18,6 +18,12 @@ from boxer.routers.company.box_db import (
 from boxer.routers.company.s3_domain import _fetch_s3_device_log_lines
 
 _DEVICE_FILE_PROBE_HINTS = (
+    "fileid",
+    "file id",
+    "파일id",
+    "파일 id",
+    "파일 아이디",
+    "파일아이디",
     "파일 있",
     "파일있",
     "파일 있어",
@@ -65,7 +71,7 @@ def _build_session_file_candidate_entry(
         "startTime": _display_value(session.get("start_time_label"), default="시간미상"),
         "stopTime": _display_value(session.get("stop_time_label"), default="미확인"),
         "stopToken": _display_value(session.get("stop_token"), default=""),
-        "recordingId": _display_value((recovery_context or {}).get("recordingId"), default=""),
+        "fileId": _display_value((recovery_context or {}).get("fileId"), default=""),
         "startedRecordingTime": _display_value(started_recording.get("timeLabel"), default=""),
         "spawnedRecordingTime": _display_value(spawned_recording.get("timeLabel"), default=""),
         "firstFfmpegErrorTime": _display_value(
@@ -133,8 +139,8 @@ def _render_file_candidate_result(
             stop_token = _display_value(session.get("stopToken"), default="")
             if stop_token:
                 lines.append(f"• 종료 토큰: `{stop_token}`")
-            recording_id = _display_value(session.get("recordingId"), default="미추출")
-            lines.append(f"• recordingId: `{recording_id}`")
+            file_id = _display_value(session.get("fileId"), default="미추출")
+            lines.append(f"• fileId: `{file_id}`")
 
             started_time = _display_value(session.get("startedRecordingTime"), default="")
             spawned_time = _display_value(session.get("spawnedRecordingTime"), default="")

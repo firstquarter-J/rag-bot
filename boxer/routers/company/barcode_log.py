@@ -1019,12 +1019,12 @@ def _find_recording_recovery_context(
     return {
         "startedRecording": started_recording,
         "spawnedRecordingFfmpeg": spawned_recording_ffmpeg,
-        "recordingId": _extract_recording_id_from_recovery_events(started_recording, spawned_recording_ffmpeg),
+        "fileId": _extract_file_id_from_recovery_events(started_recording, spawned_recording_ffmpeg),
         "timeLabel": _display_value(primary.get("timeLabel"), default="시간미상"),
     }
 
 
-def _extract_recording_id_from_recovery_events(
+def _extract_file_id_from_recovery_events(
     started_recording: dict[str, Any] | None,
     spawned_recording_ffmpeg: dict[str, Any] | None,
 ) -> str | None:
@@ -1050,7 +1050,7 @@ def _find_session_post_stop_context(
     lines: list[str],
     scan_events: list[dict[str, Any]],
     session: dict[str, Any],
-    recording_id: str | None,
+    file_id: str | None,
 ) -> dict[str, Any] | None:
     stop_line_no = int(session.get("stop_line_no") or 0)
     if stop_line_no <= 0:
@@ -1075,13 +1075,13 @@ def _find_session_post_stop_context(
     finish_line_no: int | None = None
     finish_time_label = "미확인"
     finish_count = 0
-    recording_id_lower = (recording_id or "").lower().strip()
+    file_id_lower = (file_id or "").lower().strip()
 
     for line_no in range(stop_line_no + 1, upper_bound + 1):
         raw_line = lines[line_no - 1]
         lowered = _strip_leading_log_timestamp(raw_line).lower()
-        if recording_id_lower:
-            if f"finishrecording({recording_id_lower}" not in lowered:
+        if file_id_lower:
+            if f"finishrecording({file_id_lower}" not in lowered:
                 continue
         elif "finishrecording(" not in lowered:
             continue
@@ -1202,7 +1202,7 @@ def _build_session_recording_result_text(
             source_lines,
             scan_events or [],
             session,
-            str((recovery_context or {}).get("recordingId") or "").strip() or None,
+            str((recovery_context or {}).get("fileId") or "").strip() or None,
         )
         if has_stop
         else None
