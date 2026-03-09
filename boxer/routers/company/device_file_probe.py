@@ -76,7 +76,17 @@ _DEVICE_FILE_REMOTE_HINTS = (
     "파일있",
     "파일 있어",
     "파일있어",
+    "파일 있는지",
+    "파일있는지",
     "파일 존재",
+    "영상 있",
+    "영상있",
+    "영상 있어",
+    "영상있어",
+    "영상 있는지",
+    "영상있는지",
+    "영상 존재",
+    "있는지",
     "존재 확인",
     "남은 영상",
     "남은 파일",
@@ -940,9 +950,9 @@ def _locate_barcode_file_candidates(
 
 
 def _build_device_file_scope_request_message(barcode: str, reason: str) -> str:
-    base = _build_phase2_scope_request_message(
+    return _build_phase2_scope_request_message(
         barcode,
         reason,
         "*파일 확인 대상 세션 조회 결과*",
+        example_action="파일 있나",
     )
-    return base.replace("로그 분석`", "파일 있나`")

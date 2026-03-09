@@ -1881,6 +1881,7 @@ def _build_phase2_scope_request_message(
     barcode: str,
     reason: str,
     title: str,
+    example_action: str = "로그 분석",
 ) -> str:
     return "\n".join(
         [
@@ -1891,7 +1892,7 @@ def _build_phase2_scope_request_message(
             "- 병원명 (MDA에 표시된 정확한 이름)",
             "- 병실명 (MDA에 표시된 정확한 이름)",
             "- 날짜(KST, YYYY-MM-DD)",
-            f"예: `{barcode} 병원명 세화병원(부산) 병실명 7진료실 2026-01-30 로그 분석`",
+            f"예: `{barcode} 병원명 개발실 병실명 개발진료실 날짜 2023-10-24 {example_action}`",
         ]
     )
 

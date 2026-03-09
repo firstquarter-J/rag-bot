@@ -79,6 +79,23 @@ from boxer.routers.common.db import _query_db, _validate_readonly_sql
 from boxer.routers.common.s3 import _build_s3_client
 
 
+def _rewrite_phase2_scope_request_message(
+    result_text: str,
+    title: str,
+    example_action: str,
+) -> str:
+    barcode_match = re.search(r"• 바코드: `([^`]+)`", result_text or "")
+    reason_match = re.search(r"• 사유: (.+)", result_text or "")
+    barcode = barcode_match.group(1).strip() if barcode_match else ""
+    reason = reason_match.group(1).strip() if reason_match else "2차 입력이 필요해"
+    return _build_phase2_scope_request_message(
+        barcode,
+        reason,
+        title,
+        example_action=example_action,
+    )
+
+
 def _split_barcode_log_reply(reply_text: str, max_chars: int = 3000) -> list[str]:
     text = (reply_text or "").strip()
     if not text:
@@ -1120,6 +1137,7 @@ def create_app() -> App:
                                     barcode or "",
                                     "recordings 장비 매핑이 없어 2차 입력이 필요해",
                                     "*녹화 실패 원인 분석*",
+                                    example_action="녹화 실패 원인 분석",
                                 )
                             )
                             logger.info(
@@ -1139,6 +1157,7 @@ def create_app() -> App:
                                     barcode or "",
                                     "입력한 병원명/병실명으로 장비를 찾지 못했어. MDA 표시 이름과 정확히 일치하게 입력해줘",
                                     "*녹화 실패 원인 분석*",
+                                    example_action="녹화 실패 원인 분석",
                                 )
                             )
                             logger.info(
@@ -1173,7 +1192,13 @@ def create_app() -> App:
                         max_days=cs.LOG_PHASE1_MAX_DAYS,
                     )
                     if "• 2차 조회를 위해 아래 3가지를 같이 입력해줘:" in result_text:
-                        reply(result_text.replace("*바코드 로그 분석 결과 (1차 자동 범위)*", "*녹화 실패 원인 분석*"))
+                        reply(
+                            _rewrite_phase2_scope_request_message(
+                                result_text,
+                                "*녹화 실패 원인 분석*",
+                                "녹화 실패 원인 분석",
+                            )
+                        )
                         logger.info(
                             "Responded with recording failure scope guidance in thread_ts=%s barcode=%s mode=phase1_scope_required",
                             thread_ts,
