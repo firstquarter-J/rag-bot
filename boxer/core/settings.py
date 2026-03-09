@@ -54,6 +54,13 @@ THREAD_CONTEXT_FETCH_LIMIT = int(os.getenv("THREAD_CONTEXT_FETCH_LIMIT", "100"))
 THREAD_CONTEXT_MAX_MESSAGES = int(os.getenv("THREAD_CONTEXT_MAX_MESSAGES", "12"))
 THREAD_CONTEXT_MAX_CHARS = int(os.getenv("THREAD_CONTEXT_MAX_CHARS", "5000"))
 
+NOTION_API_BASE_URL = os.getenv("NOTION_API_BASE_URL", "https://api.notion.com/v1").rstrip("/")
+NOTION_API_VERSION = os.getenv("NOTION_API_VERSION", "2022-06-28").strip()
+NOTION_TOKEN = os.getenv("NOTION_TOKEN", "").strip()
+NOTION_API_TIMEOUT_SEC = int(os.getenv("NOTION_API_TIMEOUT_SEC", "10"))
+NOTION_TEST_PAGE_ID = os.getenv("NOTION_TEST_PAGE_ID", "").strip()
+NOTION_MAX_BLOCKS = int(os.getenv("NOTION_MAX_BLOCKS", "200"))
+
 DB_QUERY_ENABLED = os.getenv("DB_QUERY_ENABLED", "").lower() in {"1", "true", "yes", "on"}
 
 DB_HOST = os.getenv("DB_HOST", "")
