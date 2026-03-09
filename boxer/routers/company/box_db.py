@@ -42,6 +42,32 @@ def _local_date_to_utc_range(target_date: str) -> tuple[datetime, datetime]:
     return utc_start, utc_end
 
 
+def _local_year_to_utc_range(target_year: int) -> tuple[datetime, datetime]:
+    local_tz = _local_zone()
+    local_start = datetime(
+        year=int(target_year),
+        month=1,
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        tzinfo=local_tz,
+    )
+    local_end = datetime(
+        year=int(target_year) + 1,
+        month=1,
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        tzinfo=local_tz,
+    )
+    return (
+        local_start.astimezone(timezone.utc).replace(tzinfo=None),
+        local_end.astimezone(timezone.utc).replace(tzinfo=None),
+    )
+
+
 def _format_recorded_at_local(value: object) -> str:
     if isinstance(value, datetime):
         local_tz = _local_zone()
@@ -572,6 +598,457 @@ def _query_all_recorded_dates_by_barcode(
             f"• 참고: 최근 `{limit}개` 컨텍스트 기준 집계라 이전 녹화 날짜가 더 있을 수 있어"
         )
 
+    return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
+
+
+def _format_barcode_label(value: object) -> str:
+    try:
+        return f"{int(value):011d}"
+    except (TypeError, ValueError):
+        return _display_value(value, default="미확인")
+
+
+def _query_ultrasound_captures(
+    *,
+    barcode: str | None = None,
+    target_date: str | None = None,
+    hospital_seq: int | None = None,
+    hospital_room_seq: int | None = None,
+    count_only: bool = False,
+) -> str:
+    if not s.DB_HOST or not s.DB_USERNAME or not s.DB_PASSWORD or not s.DB_DATABASE:
+        raise RuntimeError("DB 접속 정보(DB_*)가 비어 있어")
+
+    normalized_barcode = str(barcode or "").strip() or None
+    if hospital_seq is not None:
+        hospital_seq = int(hospital_seq)
+    if hospital_room_seq is not None:
+        hospital_room_seq = int(hospital_room_seq)
+
+    if not any((normalized_barcode, target_date, hospital_seq is not None, hospital_room_seq is not None)):
+        raise ValueError("캡처 조회는 barcode, 날짜, hospitalSeq, hospitalRoomSeq 중 최소 1개 조건이 필요해")
+
+    where_clauses: list[str] = []
+    params: list[object] = []
+    if normalized_barcode:
+        where_clauses.append("uc.barcode = %s")
+        params.append(int(normalized_barcode))
+    if target_date:
+        utc_start, utc_end = _local_date_to_utc_range(target_date)
+        where_clauses.append("uc.capturedAt >= %s")
+        where_clauses.append("uc.capturedAt < %s")
+        params.extend([utc_start, utc_end])
+    if hospital_seq is not None:
+        where_clauses.append("uc.hospitalSeq = %s")
+        params.append(hospital_seq)
+    if hospital_room_seq is not None:
+        where_clauses.append("uc.hospitalRoomSeq = %s")
+        params.append(hospital_room_seq)
+
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1 = 1"
+    limit = max(1, min(100, cs.RECORDINGS_CONTEXT_LIMIT))
+
+    connection = _create_db_connection(s.DB_QUERY_TIMEOUT_SEC)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS captureCount "
+                "FROM ultrasound_captures uc "
+                f"WHERE {where_sql}",
+                tuple(params),
+            )
+            summary = cursor.fetchone() or {}
+            total_count = int(summary.get("captureCount") or 0)
+
+            rows: list[dict[str, Any]] = []
+            if not count_only and total_count > 0:
+                cursor.execute(
+                    "SELECT "
+                    "uc.seq, "
+                    "uc.barcode, "
+                    "uc.fileId, "
+                    "uc.hospitalSeq, "
+                    "uc.hospitalRoomSeq, "
+                    "uc.deviceSeq, "
+                    "uc.s3Bucket, "
+                    "uc.s3FileKey, "
+                    "uc.studyInstanceUid, "
+                    "uc.capturedAt, "
+                    "uc.createdAt, "
+                    "h.hospitalName AS hospitalName, "
+                    "hr.roomName AS roomName "
+                    "FROM ultrasound_captures uc "
+                    "LEFT JOIN hospitals h ON uc.hospitalSeq = h.seq "
+                    "LEFT JOIN hospital_rooms hr ON uc.hospitalRoomSeq = hr.seq "
+                    f"WHERE {where_sql} "
+                    "ORDER BY uc.capturedAt DESC, uc.seq DESC "
+                    "LIMIT %s",
+                    tuple([*params, limit]),
+                )
+                rows = cursor.fetchall() or []
+    finally:
+        connection.close()
+
+    title = "*초음파 캡처 조회 결과*"
+    lines = [title]
+    if normalized_barcode:
+        lines.append(f"• 바코드: `{normalized_barcode}`")
+    if target_date:
+        lines.append(f"• 날짜(KST): `{target_date}`")
+    if hospital_seq is not None:
+        lines.append(f"• hospitalSeq: `{hospital_seq}`")
+    if hospital_room_seq is not None:
+        lines.append(f"• hospitalRoomSeq: `{hospital_room_seq}`")
+    lines.append(f"• ultrasound_captures row 수: *{total_count}개*")
+
+    if count_only:
+        return "\n".join(lines)
+
+    if total_count <= 0:
+        lines.append("• 결과: 조건에 맞는 캡처 기록이 없어")
+        return "\n".join(lines)
+
+    lines.append("• 캡처 목록(최근순):")
+    for index, row in enumerate(rows, start=1):
+        lines.extend(
+            [
+                f"- {index}.",
+                f"  barcode: `{_format_barcode_label(row.get('barcode'))}`",
+                f"  capturedAt(KST): `{_format_recorded_at_local(row.get('capturedAt'))}`",
+                f"  fileId: `{_display_value(row.get('fileId'), default='미확인')}`",
+                f"  hospitalSeq: `{_display_value(row.get('hospitalSeq'), default='미확인')}`",
+                f"  hospitalRoomSeq: `{_display_value(row.get('hospitalRoomSeq'), default='미확인')}`",
+                f"  병원: `{_display_value(row.get('hospitalName'), default='미확인')}`",
+                f"  병실: `{_display_value(row.get('roomName'), default='미확인')}`",
+                f"  s3FileKey: `{_display_value(row.get('s3FileKey'), default='미확인')}`",
+                "",
+            ]
+        )
+
+    if lines and lines[-1] == "":
+        lines.pop()
+    if total_count > len(rows):
+        lines.append(f"• 참고: 최근 `{len(rows)}개`만 표시했고 이전 캡처는 생략했어")
+    return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
+
+
+def _query_recordings_by_filters(
+    *,
+    barcode: str | None = None,
+    target_date: str | None = None,
+    target_year: int | None = None,
+    hospital_name: str | None = None,
+    room_name: str | None = None,
+    hospital_seq: int | None = None,
+    hospital_room_seq: int | None = None,
+    count_only: bool = False,
+) -> str:
+    if not s.DB_HOST or not s.DB_USERNAME or not s.DB_PASSWORD or not s.DB_DATABASE:
+        raise RuntimeError("DB 접속 정보(DB_*)가 비어 있어")
+
+    normalized_barcode = str(barcode or "").strip() or None
+    normalized_hospital_name = str(hospital_name or "").strip() or None
+    normalized_room_name = str(room_name or "").strip() or None
+    if hospital_seq is not None:
+        hospital_seq = int(hospital_seq)
+    if hospital_room_seq is not None:
+        hospital_room_seq = int(hospital_room_seq)
+
+    if not any(
+        (
+            normalized_barcode,
+            target_date,
+            target_year is not None,
+            normalized_hospital_name,
+            normalized_room_name,
+            hospital_seq is not None,
+            hospital_room_seq is not None,
+        )
+    ):
+        raise ValueError("영상 조회는 barcode, 날짜, 연도, 병원명, 병실명, hospitalSeq, hospitalRoomSeq 중 최소 1개 조건이 필요해")
+
+    where_clauses: list[str] = []
+    params: list[object] = []
+    if normalized_barcode:
+        where_clauses.append("(CAST(r.fullBarcode AS CHAR) = %s OR CAST(r.barcode AS CHAR) = %s)")
+        params.extend([normalized_barcode, normalized_barcode])
+    if target_date:
+        utc_start, utc_end = _local_date_to_utc_range(target_date)
+        where_clauses.append("r.recordedAt >= %s")
+        where_clauses.append("r.recordedAt < %s")
+        params.extend([utc_start, utc_end])
+    elif target_year is not None:
+        utc_start, utc_end = _local_year_to_utc_range(target_year)
+        where_clauses.append("r.recordedAt >= %s")
+        where_clauses.append("r.recordedAt < %s")
+        params.extend([utc_start, utc_end])
+    if normalized_hospital_name:
+        where_clauses.append("h.hospitalName = %s")
+        params.append(normalized_hospital_name)
+    if normalized_room_name:
+        where_clauses.append("hr.roomName = %s")
+        params.append(normalized_room_name)
+    if hospital_seq is not None:
+        where_clauses.append("r.hospitalSeq = %s")
+        params.append(hospital_seq)
+    if hospital_room_seq is not None:
+        where_clauses.append("r.hospitalRoomSeq = %s")
+        params.append(hospital_room_seq)
+
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1 = 1"
+    limit = max(1, min(100, cs.RECORDINGS_CONTEXT_LIMIT))
+    count_join_clauses: list[str] = []
+    if normalized_hospital_name or normalized_room_name:
+        count_join_clauses.append("LEFT JOIN hospitals h ON r.hospitalSeq = h.seq")
+    if normalized_room_name:
+        count_join_clauses.append("LEFT JOIN hospital_rooms hr ON r.hospitalRoomSeq = hr.seq")
+    count_join_sql = (" " + " ".join(count_join_clauses)) if count_join_clauses else ""
+
+    connection = _create_db_connection(s.DB_QUERY_TIMEOUT_SEC)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS recordingCount "
+                "FROM recordings r"
+                f"{count_join_sql} "
+                f"WHERE {where_sql}",
+                tuple(params),
+            )
+            summary = cursor.fetchone() or {}
+            total_count = int(summary.get("recordingCount") or 0)
+
+            rows: list[dict[str, Any]] = []
+            if not count_only and total_count > 0:
+                cursor.execute(
+                    "SELECT "
+                    "r.seq, "
+                    "r.fullBarcode, "
+                    "r.barcode, "
+                    "r.fileId, "
+                    "r.hospitalSeq, "
+                    "r.hospitalRoomSeq, "
+                    "r.deviceSeq, "
+                    "r.videoLength, "
+                    "r.streamingStatus, "
+                    "r.s3FileKey, "
+                    "r.recordedAt, "
+                    "r.createdAt, "
+                    "h.hospitalName AS hospitalName, "
+                    "hr.roomName AS roomName "
+                    "FROM recordings r "
+                    "LEFT JOIN hospitals h ON r.hospitalSeq = h.seq "
+                    "LEFT JOIN hospital_rooms hr ON r.hospitalRoomSeq = hr.seq "
+                    f"WHERE {where_sql} "
+                    "ORDER BY COALESCE(r.recordedAt, r.createdAt) DESC, r.seq DESC "
+                    "LIMIT %s",
+                    tuple([*params, limit]),
+                )
+                rows = cursor.fetchall() or []
+    finally:
+        connection.close()
+
+    lines = ["*영상 조회 결과*"]
+    if normalized_barcode:
+        lines.append(f"• 바코드: `{normalized_barcode}`")
+    if target_date:
+        lines.append(f"• 날짜(KST): `{target_date}`")
+    elif target_year is not None:
+        lines.append(f"• 연도(KST): `{target_year}`")
+    if normalized_hospital_name:
+        lines.append(f"• 병원: `{normalized_hospital_name}`")
+    if normalized_room_name:
+        lines.append(f"• 병실: `{normalized_room_name}`")
+    if hospital_seq is not None:
+        lines.append(f"• hospitalSeq: `{hospital_seq}`")
+    if hospital_room_seq is not None:
+        lines.append(f"• hospitalRoomSeq: `{hospital_room_seq}`")
+    lines.append(f"• recordings row 수: *{total_count}개*")
+
+    if count_only:
+        return "\n".join(lines)
+
+    if total_count <= 0:
+        lines.append("• 결과: 조건에 맞는 영상 기록이 없어")
+        return "\n".join(lines)
+
+    lines.append("• 영상 목록(최근순):")
+    for index, row in enumerate(rows, start=1):
+        barcode_label = _display_value(row.get("fullBarcode"), default="") or _format_barcode_label(row.get("barcode"))
+        lines.extend(
+            [
+                f"- {index}.",
+                f"  바코드: `{barcode_label}`",
+                f"  recordedAt(KST): `{_format_recorded_at_local(row.get('recordedAt'))}`",
+                f"  fileId: `{_display_value(row.get('fileId'), default='미확인')}`",
+                f"  streamingStatus: `{_display_value(row.get('streamingStatus'), default='미확인')}`",
+                f"  병원: `{_display_value(row.get('hospitalName'), default='미확인')}`",
+                f"  병실: `{_display_value(row.get('roomName'), default='미확인')}`",
+                "",
+            ]
+        )
+
+    if lines and lines[-1] == "":
+        lines.pop()
+    if total_count > len(rows):
+        lines.append(f"• 참고: 최근 `{len(rows)}개`만 표시했고 이전 영상은 생략했어")
+    return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
+
+
+def _query_ultrasound_captures_by_filters(
+    *,
+    barcode: str | None = None,
+    target_date: str | None = None,
+    target_year: int | None = None,
+    hospital_name: str | None = None,
+    room_name: str | None = None,
+    hospital_seq: int | None = None,
+    hospital_room_seq: int | None = None,
+    count_only: bool = False,
+) -> str:
+    if not s.DB_HOST or not s.DB_USERNAME or not s.DB_PASSWORD or not s.DB_DATABASE:
+        raise RuntimeError("DB 접속 정보(DB_*)가 비어 있어")
+
+    normalized_barcode = str(barcode or "").strip() or None
+    normalized_hospital_name = str(hospital_name or "").strip() or None
+    normalized_room_name = str(room_name or "").strip() or None
+    if hospital_seq is not None:
+        hospital_seq = int(hospital_seq)
+    if hospital_room_seq is not None:
+        hospital_room_seq = int(hospital_room_seq)
+
+    if not any(
+        (
+            normalized_barcode,
+            target_date,
+            target_year is not None,
+            normalized_hospital_name,
+            normalized_room_name,
+            hospital_seq is not None,
+            hospital_room_seq is not None,
+        )
+    ):
+        raise ValueError("캡처 조회는 barcode, 날짜, 연도, 병원명, 병실명, hospitalSeq, hospitalRoomSeq 중 최소 1개 조건이 필요해")
+
+    where_clauses: list[str] = []
+    params: list[object] = []
+    if normalized_barcode:
+        where_clauses.append("CAST(uc.barcode AS CHAR) = %s")
+        params.append(normalized_barcode)
+    if target_date:
+        utc_start, utc_end = _local_date_to_utc_range(target_date)
+        where_clauses.append("uc.capturedAt >= %s")
+        where_clauses.append("uc.capturedAt < %s")
+        params.extend([utc_start, utc_end])
+    elif target_year is not None:
+        utc_start, utc_end = _local_year_to_utc_range(target_year)
+        where_clauses.append("uc.capturedAt >= %s")
+        where_clauses.append("uc.capturedAt < %s")
+        params.extend([utc_start, utc_end])
+    if normalized_hospital_name:
+        where_clauses.append("h.hospitalName = %s")
+        params.append(normalized_hospital_name)
+    if normalized_room_name:
+        where_clauses.append("hr.roomName = %s")
+        params.append(normalized_room_name)
+    if hospital_seq is not None:
+        where_clauses.append("uc.hospitalSeq = %s")
+        params.append(hospital_seq)
+    if hospital_room_seq is not None:
+        where_clauses.append("uc.hospitalRoomSeq = %s")
+        params.append(hospital_room_seq)
+
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1 = 1"
+    limit = max(1, min(100, cs.RECORDINGS_CONTEXT_LIMIT))
+    count_join_clauses: list[str] = []
+    if normalized_hospital_name or normalized_room_name:
+        count_join_clauses.append("LEFT JOIN hospitals h ON uc.hospitalSeq = h.seq")
+    if normalized_room_name:
+        count_join_clauses.append("LEFT JOIN hospital_rooms hr ON uc.hospitalRoomSeq = hr.seq")
+    count_join_sql = (" " + " ".join(count_join_clauses)) if count_join_clauses else ""
+
+    connection = _create_db_connection(s.DB_QUERY_TIMEOUT_SEC)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS captureCount "
+                "FROM ultrasound_captures uc"
+                f"{count_join_sql} "
+                f"WHERE {where_sql}",
+                tuple(params),
+            )
+            summary = cursor.fetchone() or {}
+            total_count = int(summary.get("captureCount") or 0)
+
+            rows: list[dict[str, Any]] = []
+            if not count_only and total_count > 0:
+                cursor.execute(
+                    "SELECT "
+                    "uc.seq, "
+                    "uc.barcode, "
+                    "uc.fileId, "
+                    "uc.hospitalSeq, "
+                    "uc.hospitalRoomSeq, "
+                    "uc.deviceSeq, "
+                    "uc.s3Bucket, "
+                    "uc.s3FileKey, "
+                    "uc.capturedAt, "
+                    "h.hospitalName AS hospitalName, "
+                    "hr.roomName AS roomName "
+                    "FROM ultrasound_captures uc "
+                    "LEFT JOIN hospitals h ON uc.hospitalSeq = h.seq "
+                    "LEFT JOIN hospital_rooms hr ON uc.hospitalRoomSeq = hr.seq "
+                    f"WHERE {where_sql} "
+                    "ORDER BY uc.capturedAt DESC, uc.seq DESC "
+                    "LIMIT %s",
+                    tuple([*params, limit]),
+                )
+                rows = cursor.fetchall() or []
+    finally:
+        connection.close()
+
+    lines = ["*초음파 캡처 조회 결과*"]
+    if normalized_barcode:
+        lines.append(f"• 바코드: `{normalized_barcode}`")
+    if target_date:
+        lines.append(f"• 날짜(KST): `{target_date}`")
+    elif target_year is not None:
+        lines.append(f"• 연도(KST): `{target_year}`")
+    if normalized_hospital_name:
+        lines.append(f"• 병원: `{normalized_hospital_name}`")
+    if normalized_room_name:
+        lines.append(f"• 병실: `{normalized_room_name}`")
+    if hospital_seq is not None:
+        lines.append(f"• hospitalSeq: `{hospital_seq}`")
+    if hospital_room_seq is not None:
+        lines.append(f"• hospitalRoomSeq: `{hospital_room_seq}`")
+    lines.append(f"• ultrasound_captures row 수: *{total_count}개*")
+
+    if count_only:
+        return "\n".join(lines)
+
+    if total_count <= 0:
+        lines.append("• 결과: 조건에 맞는 캡처 기록이 없어")
+        return "\n".join(lines)
+
+    lines.append("• 캡처 목록(최근순):")
+    for index, row in enumerate(rows, start=1):
+        lines.extend(
+            [
+                f"- {index}.",
+                f"  바코드: `{_format_barcode_label(row.get('barcode'))}`",
+                f"  capturedAt(KST): `{_format_recorded_at_local(row.get('capturedAt'))}`",
+                f"  fileId: `{_display_value(row.get('fileId'), default='미확인')}`",
+                f"  병원: `{_display_value(row.get('hospitalName'), default='미확인')}`",
+                f"  병실: `{_display_value(row.get('roomName'), default='미확인')}`",
+                f"  s3FileKey: `{_display_value(row.get('s3FileKey'), default='미확인')}`",
+                "",
+            ]
+        )
+
+    if lines and lines[-1] == "":
+        lines.pop()
+    if total_count > len(rows):
+        lines.append(f"• 참고: 최근 `{len(rows)}개`만 표시했고 이전 캡처는 생략했어")
     return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
 
 

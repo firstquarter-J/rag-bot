@@ -22,9 +22,11 @@ from boxer.routers.company.barcode_log import (
     _analyze_barcode_log_errors,
     _analyze_barcode_log_scan_events,
     _build_phase2_scope_request_message,
+    _extract_capture_seq_filters,
     _extract_hospital_room_scope,
     _extract_log_date,
     _extract_log_date_with_presence,
+    _extract_year_filter,
     _is_barcode_all_recorded_dates_request,
     _is_barcode_video_info_request,
     _is_barcode_log_analysis_request,
@@ -34,7 +36,9 @@ from boxer.routers.company.barcode_log import (
     _is_barcode_video_recorded_on_date_request,
     _is_barcode_video_count_request,
     _is_error_focused_request,
+    _is_recordings_filter_query_request,
     _is_scan_focused_request,
+    _is_ultrasound_capture_filter_query_request,
 )
 from boxer.routers.company.db_query import _extract_db_query, _format_db_query_result
 from boxer.routers.company.device_file_probe import (
@@ -65,10 +69,12 @@ from boxer.routers.company.box_db import (
     _query_last_recorded_at_by_barcode,
     _query_recordings_count_by_barcode,
     _query_recordings_detail_by_barcode,
+    _query_recordings_by_filters,
     _query_recordings_length_by_barcode,
     _query_recordings_length_on_date_by_barcode,
     _query_recordings_list_by_barcode,
     _query_recordings_on_date_by_barcode,
+    _query_ultrasound_captures_by_filters,
 )
 from boxer.routers.company.s3_domain import (
     _extract_s3_request,
@@ -94,6 +100,19 @@ def _rewrite_phase2_scope_request_message(
         title,
         example_action=example_action,
     )
+
+
+def _extract_optional_requested_date(question: str) -> tuple[str | None, bool]:
+    parsed_date, has_requested_date = _extract_log_date_with_presence(question)
+    return (parsed_date if has_requested_date else None, has_requested_date)
+
+
+def _is_generic_count_or_existence_request(question: str) -> bool:
+    text = (question or "").strip()
+    lowered = text.lower()
+    return any(token in text for token in cs.VIDEO_COUNT_HINT_TOKENS) or any(
+        token in text for token in ("있나", "있어", "있는지", "유무", "존재", "몇")
+    ) or any(token in lowered for token in ("count",))
 
 
 def _split_barcode_log_reply(reply_text: str, max_chars: int = 3000) -> list[str]:
@@ -1390,6 +1409,108 @@ def create_app() -> App:
             except Exception:
                 logger.exception("Barcode log analysis failed")
                 reply("바코드 로그 분석 중 오류가 발생했어. 잠시 후 다시 시도해줘")
+            return
+
+        try:
+            structured_target_date, _ = _extract_optional_requested_date(question)
+        except ValueError as exc:
+            structured_target_date = None
+            structured_date_error = exc
+        else:
+            structured_date_error = None
+
+        structured_target_year = _extract_year_filter(question)
+        structured_hospital_name, structured_room_name = _extract_hospital_room_scope(question)
+        structured_hospital_seq, structured_hospital_room_seq = _extract_capture_seq_filters(question)
+
+        if _is_ultrasound_capture_filter_query_request(
+            question,
+            barcode=barcode,
+            target_date=structured_target_date,
+            target_year=structured_target_year,
+            hospital_name=structured_hospital_name,
+            room_name=structured_room_name,
+            hospital_seq=structured_hospital_seq,
+            hospital_room_seq=structured_hospital_room_seq,
+        ):
+            try:
+                if structured_date_error is not None:
+                    raise structured_date_error
+                result_text = _query_ultrasound_captures_by_filters(
+                    barcode=barcode,
+                    target_date=structured_target_date,
+                    target_year=structured_target_year,
+                    hospital_name=structured_hospital_name,
+                    room_name=structured_room_name,
+                    hospital_seq=structured_hospital_seq,
+                    hospital_room_seq=structured_hospital_room_seq,
+                    count_only=_is_generic_count_or_existence_request(question),
+                )
+                reply(result_text)
+                logger.info(
+                    "Responded with ultrasound capture filters in thread_ts=%s barcode=%s date=%s year=%s hospital=%s room=%s hospitalSeq=%s hospitalRoomSeq=%s",
+                    thread_ts,
+                    barcode,
+                    structured_target_date,
+                    structured_target_year,
+                    structured_hospital_name,
+                    structured_room_name,
+                    structured_hospital_seq,
+                    structured_hospital_room_seq,
+                )
+            except ValueError as exc:
+                reply(f"캡처 조회 요청 형식 오류: {exc}")
+            except (pymysql.MySQLError, RuntimeError):
+                logger.exception("Ultrasound captures query failed")
+                reply("캡처 조회 중 오류가 발생했어. DB 연결 정보와 네트워크 상태를 확인해줘")
+            except Exception:
+                logger.exception("Ultrasound captures query failed")
+                reply("캡처 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
+            return
+
+        if _is_recordings_filter_query_request(
+            question,
+            barcode=barcode,
+            target_date=structured_target_date,
+            target_year=structured_target_year,
+            hospital_name=structured_hospital_name,
+            room_name=structured_room_name,
+            hospital_seq=structured_hospital_seq,
+            hospital_room_seq=structured_hospital_room_seq,
+        ):
+            try:
+                if structured_date_error is not None:
+                    raise structured_date_error
+                result_text = _query_recordings_by_filters(
+                    barcode=barcode,
+                    target_date=structured_target_date,
+                    target_year=structured_target_year,
+                    hospital_name=structured_hospital_name,
+                    room_name=structured_room_name,
+                    hospital_seq=structured_hospital_seq,
+                    hospital_room_seq=structured_hospital_room_seq,
+                    count_only=_is_generic_count_or_existence_request(question),
+                )
+                reply(result_text)
+                logger.info(
+                    "Responded with recordings filters in thread_ts=%s barcode=%s date=%s year=%s hospital=%s room=%s hospitalSeq=%s hospitalRoomSeq=%s",
+                    thread_ts,
+                    barcode,
+                    structured_target_date,
+                    structured_target_year,
+                    structured_hospital_name,
+                    structured_room_name,
+                    structured_hospital_seq,
+                    structured_hospital_room_seq,
+                )
+            except ValueError as exc:
+                reply(f"영상 조회 요청 형식 오류: {exc}")
+            except (pymysql.MySQLError, RuntimeError):
+                logger.exception("Recordings filters query failed")
+                reply("영상 조회 중 오류가 발생했어. DB 연결 정보와 네트워크 상태를 확인해줘")
+            except Exception:
+                logger.exception("Recordings filters query failed")
+                reply("영상 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
             return
 
         if _is_barcode_video_count_request(question, barcode):

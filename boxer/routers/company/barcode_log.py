@@ -24,6 +24,7 @@ _KOREAN_MD_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*월\s*(\d{1,2})\s*일(?!\d)
 _COMPACT_YYYYMMDD_PATTERN = re.compile(r"(?<!\d)(20\d{2}|19\d{2})(\d{2})(\d{2})(?!\d)")
 _COMPACT_YYMMDD_PATTERN = re.compile(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)")
 _COMPACT_MMDD_PATTERN = re.compile(r"(?<!\d)(\d{2})(\d{2})(?!\d)")
+_YEAR_ONLY_PATTERN = re.compile(r"(?<!\d)(20\d{2}|\d{2})\s*년(?:도)?(?!\d)")
 _MOTION_STOP_STATUS_PATTERN = re.compile(
     r"Motion detected:\s*(true|false)\s*,\s*Error:\s*(true|false)",
     re.IGNORECASE,
@@ -40,6 +41,11 @@ _ROOM_SCOPE_PATTERN = re.compile(
     r"(?:^|[\s)])(?:병실(?:명)?|진료실명)\s*[:=]?\s*(.+?)(?=\s*(?:날짜|로그|분석)\s*[:=]?|$)"
 )
 _ROOM_TOKEN_PATTERN = re.compile(r"([^\s`'\",]*(?:진료실|병실)[^\s`'\",]*)")
+_HOSPITAL_SEQ_PATTERN = re.compile(r"(?:hospitalseq|병원seq)\s*[:=]?\s*(\d+)", re.IGNORECASE)
+_HOSPITAL_ROOM_SEQ_PATTERN = re.compile(
+    r"(?:hospitalroomseq|hospital_room_seq|병실seq)\s*[:=]?\s*(\d+)",
+    re.IGNORECASE,
+)
 _RAW_LOG_LEVEL_PATTERN = re.compile(
     r"^\[[^\]]+\]\s+\[[^\]]+\]\s+\[\s*([A-Za-z]+)\s*\]",
     re.IGNORECASE,
@@ -51,6 +57,7 @@ _NORMALIZED_LOG_LEVEL_PATTERN = re.compile(
 _TODAY_HINTS = ("오늘", "금일", "today")
 _DAY_BEFORE_YESTERDAY_HINTS = ("그제", "엊그제", "day before yesterday")
 _TOMORROW_HINTS = ("내일", "tomorrow")
+_CAPTURE_HINT_TOKENS = ("캡처", "capture", "captures", "capturedat", "스냅샷", "snapshot")
 
 
 def _current_local_date() -> datetime.date:
@@ -224,6 +231,14 @@ def _extract_log_date_with_presence(question: str) -> tuple[str, bool]:
     return base_date.strftime("%Y-%m-%d"), False
 
 
+def _extract_year_filter(question: str) -> int | None:
+    text = (question or "").strip()
+    matched = _YEAR_ONLY_PATTERN.search(text)
+    if not matched:
+        return None
+    return _normalize_year(int(matched.group(1)))
+
+
 def _is_barcode_log_analysis_request(question: str, barcode: str | None) -> bool:
     if not barcode:
         return False
@@ -233,6 +248,79 @@ def _is_barcode_log_analysis_request(question: str, barcode: str | None) -> bool
         re.search(r"\blog\b", lowered)
     )
     return has_log_hint
+
+
+def _is_recordings_filter_query_request(
+    question: str,
+    *,
+    barcode: str | None,
+    target_date: str | None,
+    target_year: int | None,
+    hospital_name: str | None,
+    room_name: str | None,
+    hospital_seq: int | None,
+    hospital_room_seq: int | None,
+) -> bool:
+    text = (question or "").strip()
+    lowered = text.lower()
+
+    if "로그" in text or re.search(r"\blog\b", lowered):
+        return False
+
+    has_video_hint = any(token in text for token in cs.VIDEO_HINT_TOKENS) or any(
+        token in lowered for token in cs.VIDEO_HINT_TOKENS
+    ) or any(token in text for token in ("초음파", "촬영", "녹화"))
+    if not has_video_hint:
+        return False
+
+    has_filter_scope = any(
+        (
+            target_year is not None,
+            target_date is not None,
+            hospital_name,
+            room_name,
+            hospital_seq is not None,
+            hospital_room_seq is not None,
+        )
+    )
+    if not has_filter_scope:
+        return False
+
+    if barcode and not has_filter_scope:
+        return False
+    return True
+
+
+def _is_ultrasound_capture_filter_query_request(
+    question: str,
+    *,
+    barcode: str | None,
+    target_date: str | None,
+    target_year: int | None,
+    hospital_name: str | None,
+    room_name: str | None,
+    hospital_seq: int | None,
+    hospital_room_seq: int | None,
+) -> bool:
+    text = (question or "").strip()
+    lowered = text.lower()
+    has_capture_hint = any(token in text for token in _CAPTURE_HINT_TOKENS) or any(
+        token in lowered for token in _CAPTURE_HINT_TOKENS
+    )
+    if not has_capture_hint:
+        return False
+
+    return any(
+        (
+            barcode,
+            target_date is not None,
+            target_year is not None,
+            hospital_name,
+            room_name,
+            hospital_seq is not None,
+            hospital_room_seq is not None,
+        )
+    )
 
 
 def _is_barcode_video_count_request(question: str, barcode: str | None) -> bool:
@@ -455,6 +543,40 @@ def _is_barcode_all_recorded_dates_request(question: str, barcode: str | None) -
         token in lowered for token in ("date", "dates", "list")
     )
     return has_date_hint and (has_all_hint or has_per_video_hint or has_date_list_phrase)
+
+
+def _extract_capture_seq_filters(question: str) -> tuple[int | None, int | None]:
+    text = str(question or "").strip()
+    hospital_seq_match = _HOSPITAL_SEQ_PATTERN.search(text)
+    hospital_room_seq_match = _HOSPITAL_ROOM_SEQ_PATTERN.search(text)
+    hospital_seq = int(hospital_seq_match.group(1)) if hospital_seq_match else None
+    hospital_room_seq = int(hospital_room_seq_match.group(1)) if hospital_room_seq_match else None
+    return hospital_seq, hospital_room_seq
+
+
+def _is_ultrasound_capture_request(question: str, barcode: str | None) -> bool:
+    text = (question or "").strip()
+    lowered = text.lower()
+    has_capture_hint = any(token in text for token in _CAPTURE_HINT_TOKENS) or any(
+        token in lowered for token in _CAPTURE_HINT_TOKENS
+    )
+    if not has_capture_hint:
+        return False
+
+    _, has_requested_date = _extract_log_date_with_presence(text)
+    hospital_seq, hospital_room_seq = _extract_capture_seq_filters(text)
+    return bool(barcode or has_requested_date or hospital_seq is not None or hospital_room_seq is not None)
+
+
+def _is_ultrasound_capture_count_request(question: str, barcode: str | None) -> bool:
+    if not _is_ultrasound_capture_request(question, barcode):
+        return False
+
+    text = (question or "").strip()
+    lowered = text.lower()
+    return any(token in text for token in ("몇 개", "몇개", "개수", "갯수", "수")) or any(
+        token in lowered for token in ("count",)
+    )
 
 
 def _find_error_lines(lines: list[str]) -> list[tuple[int, str]]:
@@ -1934,6 +2056,12 @@ def _extract_hospital_room_scope(question: str) -> tuple[str | None, str | None]
         fallback_text = pattern.sub(" ", fallback_text)
     fallback_text = re.sub(r"(?<!\d)\d{11}(?!\d)", " ", fallback_text)
     fallback_text = re.sub(r"\b(?:로그|분석)\b", " ", fallback_text)
+    fallback_text = re.sub(
+        r"\b(?:영상|비디오|동영상|recording|recordings|캡처|capture|captures|스냅샷|snapshot|조회|목록|개수|갯수|count|있는지|있나|있어|유무|존재|전체)\b",
+        " ",
+        fallback_text,
+        flags=re.IGNORECASE,
+    )
     fallback_text = " ".join(fallback_text.split()).strip()
 
     room_token_match = _ROOM_TOKEN_PATTERN.search(fallback_text)
@@ -1943,6 +2071,11 @@ def _extract_hospital_room_scope(question: str) -> tuple[str | None, str | None]
     if not hospital_name and room_token_match:
         hospital_candidate = _clean(fallback_text[: room_token_match.start()])
         hospital_name = hospital_candidate
+
+    if not hospital_name and not room_name:
+        cleaned_fallback = _clean(fallback_text)
+        if any(token in cleaned_fallback for token in ("병원", "의원", "클리닉", "센터")):
+            hospital_name = cleaned_fallback
 
     return (hospital_name or None, room_name or None)
 
