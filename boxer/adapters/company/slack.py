@@ -55,6 +55,7 @@ from boxer.routers.company.recording_failure_analysis import (
     _build_recording_failure_analysis_evidence,
     _has_recording_failure_analysis_hints,
     _is_recording_failure_analysis_request,
+    _narrow_recording_failure_analysis_evidence,
     _render_recording_failure_analysis_fallback,
 )
 from boxer.routers.company.box_db import (
@@ -208,6 +209,19 @@ def _split_barcode_log_reply(reply_text: str, max_chars: int = 3000) -> list[str
     return chunks
 
 
+def _extract_user_only_thread_text(thread_context: str, target_user_id: str) -> str:
+    prefix = f"{(target_user_id or '').strip()}: "
+    if not prefix.strip():
+        return ""
+    lines: list[str] = []
+    for raw_line in (thread_context or "").splitlines():
+        line = raw_line.strip()
+        if not line.startswith(prefix):
+            continue
+        lines.append(line[len(prefix) :].strip())
+    return "\n".join(part for part in lines if part)
+
+
 def _extract_latest_barcode_from_thread_context(thread_context: str) -> str | None:
     lines = [line.strip() for line in (thread_context or "").splitlines() if line.strip()]
     for line in reversed(lines):
@@ -329,7 +343,6 @@ def create_app() -> App:
             required_bullets = (
                 "• 핵심 원인:",
                 "• 운영 근거:",
-                "• 코드 근거:",
                 "• 영향:",
                 "• 권장 조치:",
                 "• 확실도:",
@@ -1149,6 +1162,29 @@ def create_app() -> App:
                     question=question,
                     summary_payload=log_analysis_payload,
                 )
+                failure_thread_context = thread_context_for_scope or _load_thread_context(
+                    client,
+                    logger,
+                    channel_id,
+                    thread_ts,
+                    current_ts,
+                )
+                failure_user_thread_text = _extract_user_only_thread_text(failure_thread_context, user_id)
+                selector_text = "\n".join(
+                    part for part in (failure_user_thread_text, question) if (part or "").strip()
+                ).strip()
+                failure_evidence, session_scope_message = _narrow_recording_failure_analysis_evidence(
+                    failure_evidence,
+                    selector_text,
+                )
+                if session_scope_message:
+                    reply(session_scope_message)
+                    logger.info(
+                        "Responded with recording failure session scope guidance in thread_ts=%s barcode=%s",
+                        thread_ts,
+                        barcode,
+                    )
+                    return
                 request_payload = failure_evidence.get("request") if isinstance(failure_evidence, dict) else None
                 if isinstance(request_payload, dict):
                     request_payload["mode"] = analysis_mode

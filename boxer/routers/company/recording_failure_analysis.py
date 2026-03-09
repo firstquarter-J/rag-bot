@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,19 @@ _SNAPSHOT_PATHS = {
     "v2.11.300": lambda: cs.MOMMYBOX_REF_V211300_PATH,
     "legacy": lambda: cs.MOMMYBOX_REF_LEGACY_PATH,
 }
+
+_LEGACY_DEVICE_HINTS = (
+    "구버전 장비",
+    "legacy",
+)
+
+_SESSION_LAST_HINTS = ("마지막 세션", "최근 세션", "최신 세션")
+_SESSION_FIRST_HINTS = ("첫 세션", "첫번째 세션", "첫 번째 세션", "세션 1", "1번째 세션", "1번 세션")
+_SESSION_INDEX_PATTERNS = (
+    re.compile(r"세션\s*([1-9]\d*)"),
+    re.compile(r"([1-9]\d*)\s*번째\s*세션"),
+    re.compile(r"([1-9]\d*)\s*번\s*세션"),
+)
 
 _TAG_CODE_TARGETS: dict[str, list[dict[str, Any]]] = {
     "ffmpeg_error": [
@@ -343,6 +357,14 @@ def _resolve_snapshot_path(ref: str) -> Path | None:
     return path
 
 
+def _select_code_reference_ref(question: str) -> str:
+    text = (question or "").strip()
+    lowered = text.lower()
+    if any(hint in text or hint in lowered for hint in _LEGACY_DEVICE_HINTS):
+        return "legacy"
+    return "v2.11.300"
+
+
 def _build_code_evidence(question: str, tags: list[str]) -> list[dict[str, Any]]:
     include_due_to_question = _has_code_hints(question)
     include_due_to_tags = any(
@@ -361,6 +383,8 @@ def _build_code_evidence(question: str, tags: list[str]) -> list[dict[str, Any]]
     if not include_due_to_question and not include_due_to_tags:
         return []
 
+    selected_ref = _select_code_reference_ref(question)
+
     items: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for tag in tags:
@@ -368,6 +392,8 @@ def _build_code_evidence(question: str, tags: list[str]) -> list[dict[str, Any]]
             ref = str(target.get("ref") or "").strip()
             rel_path = str(target.get("path") or "").strip()
             if not ref or not rel_path:
+                continue
+            if ref != selected_ref:
                 continue
             key = (ref, rel_path)
             if key in seen:
@@ -413,8 +439,155 @@ def _build_compact_record(record: dict[str, Any]) -> dict[str, Any]:
         "errorGroups": (record.get("errorGroups") or [])[:6],
         "scanEventCount": int(record.get("scanEventCount") or 0),
         "errorLineCount": int(record.get("errorLineCount") or 0),
+        "sessionDetails": record.get("sessionDetails") or [],
         "classificationTags": _classify_record(record),
     }
+
+
+def _extract_session_selector(text: str) -> tuple[str, int | None] | None:
+    content = (text or "").strip()
+    if not content:
+        return None
+    lowered = content.lower()
+    if any(hint in content or hint in lowered for hint in _SESSION_LAST_HINTS):
+        return ("last", None)
+    if any(hint in content or hint in lowered for hint in _SESSION_FIRST_HINTS):
+        return ("index", 1)
+    for pattern in _SESSION_INDEX_PATTERNS:
+        matched = pattern.search(content)
+        if matched:
+            return ("index", int(matched.group(1)))
+    return None
+
+
+def _build_session_candidates(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for record_index, record in enumerate(records):
+        if not isinstance(record, dict):
+            continue
+        session_details = record.get("sessionDetails") if isinstance(record.get("sessionDetails"), list) else []
+        for session_detail in session_details:
+            if not isinstance(session_detail, dict):
+                continue
+            candidates.append(
+                {
+                    "recordIndex": record_index,
+                    "sessionDetail": session_detail,
+                }
+            )
+    return candidates
+
+
+def _clone_record_for_session(record: dict[str, Any], session_detail: dict[str, Any]) -> dict[str, Any]:
+    cloned = deepcopy(record)
+    normal_closed = bool(session_detail.get("normalClosed"))
+    diagnostic = session_detail.get("sessionDiagnostic") if isinstance(session_detail.get("sessionDiagnostic"), dict) else {}
+    cloned["sessions"] = {
+        "sessionCount": 1,
+        "normalCount": 1 if normal_closed else 0,
+        "abnormalCount": 0 if normal_closed else 1,
+    }
+    cloned["restartDetected"] = bool(session_detail.get("restartDetected"))
+    cloned["restartEvents"] = []
+    cloned["firstSessionStartTime"] = _display_value(session_detail.get("startTime"), default="미확인")
+    cloned["lastSessionStopTime"] = _display_value(session_detail.get("stopTime"), default="미확인")
+    cloned["scanEventCount"] = int(session_detail.get("scanEventCount") or 0)
+    cloned["errorLineCount"] = int(session_detail.get("errorLineCount") or 0)
+    cloned["errorGroups"] = list(session_detail.get("errorGroups") or [])
+    cloned["firstFfmpegError"] = dict(session_detail.get("firstFfmpegError") or {})
+    cloned["sessionDiagnostics"] = [diagnostic] if diagnostic else []
+    cloned["sessionDetails"] = [deepcopy(session_detail)]
+    cloned["classificationTags"] = _classify_record(cloned)
+    return cloned
+
+
+def _build_recording_failure_session_scope_request_message(
+    barcode: str,
+    request_date: str,
+    records: list[dict[str, Any]],
+) -> str:
+    lines = [
+        "*녹화 실패 원인 분석*",
+        f"• 바코드: `{_display_value(barcode, default='미확인')}`",
+    ]
+    if request_date:
+        lines.append(f"• 날짜: `{request_date}`")
+    lines.append("• 세션이 여러 건이라 어떤 세션을 분석할지 지정해줘")
+    lines.append("• 예: `마지막 세션 녹화 실패 원인`, `세션 1 녹화 실패 원인`, `세션 2 원인 분석`")
+
+    candidate_index = 1
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        device_name = _display_value(record.get("deviceName"), default="미확인")
+        hospital_name = _display_value(record.get("hospitalName"), default="미확인")
+        room_name = _display_value(record.get("roomName"), default="미확인")
+        for session_detail in (record.get("sessionDetails") or []):
+            if not isinstance(session_detail, dict):
+                continue
+            start_time = _display_value(session_detail.get("startTime"), default="시간미상")
+            stop_time = _display_value(session_detail.get("stopTime"), default="미확인")
+            result_text = _display_value(session_detail.get("recordingResult"), default="미확인")
+            lines.append(
+                f"- 세션 {candidate_index}: `{start_time}` ~ `{stop_time}` / `{device_name}` / `{hospital_name}` `{room_name}` / `{result_text}`"
+            )
+            candidate_index += 1
+            if candidate_index > 4:
+                return "\n".join(lines)
+    return "\n".join(lines)
+
+
+def _narrow_recording_failure_analysis_evidence(
+    evidence_payload: dict[str, Any],
+    selector_text: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    records = evidence_payload.get("records") if isinstance(evidence_payload, dict) else []
+    if not isinstance(records, list) or not records:
+        return evidence_payload, None
+
+    candidates = _build_session_candidates(records)
+    if len(candidates) <= 1:
+        if len(candidates) == 1:
+            selected = candidates[0]
+            narrowed = deepcopy(evidence_payload)
+            narrowed["records"] = [
+                _clone_record_for_session(records[selected["recordIndex"]], selected["sessionDetail"])
+            ]
+            return narrowed, None
+        return evidence_payload, None
+
+    selector = _extract_session_selector(selector_text)
+    if selector is None:
+        request = evidence_payload.get("request") if isinstance(evidence_payload, dict) else {}
+        return None, _build_recording_failure_session_scope_request_message(
+            _display_value((request or {}).get("barcode"), default=""),
+            _display_value((request or {}).get("date"), default=""),
+            records,
+        )
+
+    mode, index = selector
+    selected_candidate: dict[str, Any] | None = None
+    if mode == "last":
+        selected_candidate = candidates[-1]
+    elif mode == "index" and index is not None and 1 <= index <= len(candidates):
+        selected_candidate = candidates[index - 1]
+
+    if selected_candidate is None:
+        request = evidence_payload.get("request") if isinstance(evidence_payload, dict) else {}
+        return None, _build_recording_failure_session_scope_request_message(
+            _display_value((request or {}).get("barcode"), default=""),
+            _display_value((request or {}).get("date"), default=""),
+            records,
+        )
+
+    narrowed = deepcopy(evidence_payload)
+    narrowed["records"] = [
+        _clone_record_for_session(records[selected_candidate["recordIndex"]], selected_candidate["sessionDetail"])
+    ]
+    request_payload = narrowed.get("request") if isinstance(narrowed.get("request"), dict) else {}
+    if request_payload is not None:
+        request_payload["selectedSessionHint"] = selector_text
+    return narrowed, None
 
 
 def _build_recording_failure_analysis_evidence(
@@ -600,7 +773,6 @@ def _build_confidence(record: dict[str, Any]) -> str:
 def _render_recording_failure_analysis_fallback(evidence_payload: dict[str, Any]) -> str:
     request = evidence_payload.get("request") if isinstance(evidence_payload, dict) else {}
     records = evidence_payload.get("records") if isinstance(evidence_payload, dict) else []
-    code_evidence = evidence_payload.get("codeEvidence") if isinstance(evidence_payload, dict) else []
     barcode = _display_value((request or {}).get("barcode"), default="미확인")
     request_date = _display_value((request or {}).get("date"), default="미확인")
 
@@ -614,7 +786,6 @@ def _render_recording_failure_analysis_fallback(evidence_payload: dict[str, Any]
     if not isinstance(records, list) or not records:
         lines.append("• 핵심 원인: 해당 범위에서 실패 원인을 판단할 운영 근거를 찾지 못했어")
         lines.append("• 운영 근거: 세션 또는 에러 라인 확인 필요")
-        lines.append("• 코드 근거: 없음")
         lines.append("• 영향: 추가 확인 필요")
         lines.append("• 권장 조치:")
         lines.append("- 바코드/날짜/병원/병실 범위를 다시 확인해줘")
@@ -634,20 +805,6 @@ def _render_recording_failure_analysis_fallback(evidence_payload: dict[str, Any]
         ]
     )
     lines.extend(_build_operational_evidence_lines(primary))
-    lines.append("• 코드 근거:")
-    if isinstance(code_evidence, list) and code_evidence:
-        for item in code_evidence[:3]:
-            if not isinstance(item, dict):
-                continue
-            ref = _display_value(item.get("ref"), default="미확인")
-            path = _display_value(item.get("path"), default="미확인")
-            reason = _display_value(item.get("reason"), default="")
-            if reason:
-                lines.append(f"- `{ref}/{path}`: {reason}")
-            else:
-                lines.append(f"- `{ref}/{path}`")
-    else:
-        lines.append("- 없음")
     lines.append(f"• 영향: {_build_impact_line(primary)}")
     lines.append("• 권장 조치:")
     lines.extend(_build_action_lines(primary))

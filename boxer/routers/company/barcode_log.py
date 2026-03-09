@@ -1572,15 +1572,37 @@ def _build_log_analysis_record(
     error_items = _serialize_error_lines_for_evidence(session_error_lines)
     first_ffmpeg_error = _find_first_ffmpeg_error_context(session_error_lines, sessions)
     session_diagnostics: list[dict[str, Any]] = []
+    session_details: list[dict[str, Any]] = []
     for index, session in enumerate(sessions, start=1):
+        session_scan_events = _events_in_session(session_scans, session)
+        session_motion_events = _events_in_session(session_motions, session)
+        session_restart_events = _events_in_session(session_restarts, session)
         session_error_subset = _error_lines_in_session(session_error_lines, session)
-        _, _, post_stop_context = _build_session_recording_result_text(
+        recording_result, recovery_context, post_stop_context = _build_session_recording_result_text(
             source_lines,
             session,
-            session_restarts,
+            session_restart_events,
             session_error_subset,
             all_scan_events,
+            recordings_on_date_count,
         )
+        session_error_items = _serialize_error_lines_for_evidence(session_error_subset)
+        session_first_ffmpeg_error = _find_first_ffmpeg_error_context(session_error_subset, [session])
+        session_detail = {
+            "index": index,
+            "startTime": _display_value(session.get("start_time_label"), default="시간미상"),
+            "stopTime": _display_value(session.get("stop_time_label"), default="미확인"),
+            "stopToken": _display_value(session.get("stop_token"), default="미확인"),
+            "normalClosed": session.get("stop_line_no") is not None,
+            "restartDetected": bool(session_restart_events),
+            "recordingResult": recording_result,
+            "fileId": _display_value((recovery_context or {}).get("fileId"), default=""),
+            "scanEventCount": len(_serialize_scan_events_for_evidence(session_scan_events)),
+            "motionEventCount": len(_serialize_motion_events_for_evidence(session_motion_events)),
+            "errorLineCount": len(session_error_items),
+            "errorGroups": _build_error_groups(session_error_items),
+            "firstFfmpegError": session_first_ffmpeg_error or {},
+        }
         session_diagnostics.append(
             {
                 "index": index,
@@ -1595,6 +1617,8 @@ def _build_log_analysis_record(
                 "displayText": _display_value((post_stop_context or {}).get("displayText"), default=""),
             }
         )
+        session_detail["sessionDiagnostic"] = session_diagnostics[-1]
+        session_details.append(session_detail)
     return {
         "deviceName": device_name,
         "hospitalName": hospital_name,
@@ -1622,6 +1646,7 @@ def _build_log_analysis_record(
         "errorGroups": _build_error_groups(error_items),
         "firstFfmpegError": first_ffmpeg_error,
         "sessionDiagnostics": session_diagnostics,
+        "sessionDetails": session_details,
         "recordingsOnDateCount": int(recordings_on_date_count),
         "recordingsOnDateStatuses": recordings_on_date_statuses or [],
     }
