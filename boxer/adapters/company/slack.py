@@ -51,6 +51,12 @@ from boxer.routers.company.device_file_probe import (
     _should_render_compact_device_download_result,
     _should_render_compact_device_file_list,
 )
+from boxer.routers.company.recording_failure_analysis import (
+    _build_recording_failure_analysis_evidence,
+    _has_recording_failure_analysis_hints,
+    _is_recording_failure_analysis_request,
+    _render_recording_failure_analysis_fallback,
+)
 from boxer.routers.company.box_db import (
     _load_recordings_context_by_barcode,
     _lookup_device_contexts_by_hospital_room,
@@ -310,10 +316,58 @@ def create_app() -> App:
 
             return False
 
+        def _needs_recording_failure_analysis_fallback(
+            synthesized: str,
+            fallback_text: str,
+            route_name: str,
+        ) -> bool:
+            if route_name != "recording failure analysis":
+                return False
+
+            normalized_synth = (synthesized or "").strip()
+            normalized_fallback = (fallback_text or "").strip()
+            required_bullets = (
+                "• 핵심 원인:",
+                "• 운영 근거:",
+                "• 코드 근거:",
+                "• 영향:",
+                "• 권장 조치:",
+                "• 확실도:",
+            )
+            reasoning_leak_tokens = (
+                "</think>",
+                "<think>",
+                "let me ",
+                "i need to",
+                "the user",
+                "based on",
+                "looking at",
+                "now, checking",
+                "wait,",
+                "wait ",
+                "for the ",
+                "the error",
+            )
+
+            if normalized_fallback.startswith("*녹화 실패 원인 분석*") and not normalized_synth.startswith("*녹화 실패 원인 분석*"):
+                return True
+
+            lowered = normalized_synth.lower()
+            if any(token in lowered for token in reasoning_leak_tokens):
+                return True
+
+            for bullet in required_bullets:
+                if bullet in normalized_fallback and bullet not in normalized_synth:
+                    return True
+
+            return False
+
         def _reply_with_retrieval_synthesis(
             fallback_text: str,
             evidence_payload: dict[str, Any],
             route_name: str,
+            *,
+            max_tokens: int | None = None,
         ) -> None:
             if route_name == "barcode log analysis":
                 chunks = _split_barcode_log_reply(fallback_text)
@@ -379,6 +433,7 @@ def create_app() -> App:
                     provider=provider,
                     claude_client=claude_client,
                     system_prompt=cs.SYSTEM_PROMPT or None,
+                    max_tokens=max_tokens,
                 )
                 final_text = synthesized_text or fallback_text
                 if "다른 바코드" in final_text and "다른 바코드" not in fallback_text:
@@ -386,6 +441,8 @@ def create_app() -> App:
                 if "다른 barcode" in final_text and "다른 barcode" not in fallback_text:
                     final_text = fallback_text
                 if _needs_barcode_log_fallback(final_text, fallback_text, route_name):
+                    final_text = fallback_text
+                if _needs_recording_failure_analysis_fallback(final_text, fallback_text, route_name):
                     final_text = fallback_text
                 reply(final_text)
                 logger.info(
@@ -792,6 +849,7 @@ def create_app() -> App:
         phase2_hospital_name, phase2_room_name = _extract_hospital_room_scope(question)
         has_phase2_scope = bool(phase2_hospital_name and phase2_room_name)
         phase2_has_requested_date = False
+        thread_context_for_scope = ""
 
         if has_phase2_scope:
             try:
@@ -799,7 +857,7 @@ def create_app() -> App:
             except ValueError:
                 phase2_has_requested_date = True
 
-        if not barcode and has_phase2_scope and phase2_has_requested_date:
+        if has_phase2_scope and phase2_has_requested_date:
             thread_context_for_scope = _load_thread_context(
                 client,
                 logger,
@@ -807,6 +865,8 @@ def create_app() -> App:
                 thread_ts,
                 current_ts,
             )
+
+        if not barcode and has_phase2_scope and phase2_has_requested_date:
             recovered_barcode = _extract_latest_barcode_from_thread_context(thread_context_for_scope)
             if recovered_barcode:
                 barcode = recovered_barcode
@@ -907,6 +967,12 @@ def create_app() -> App:
             return evidence
 
         is_phase2_scope_followup = bool(barcode and has_phase2_scope and phase2_has_requested_date)
+        is_failure_phase2_scope_followup = bool(
+            barcode
+            and has_phase2_scope
+            and phase2_has_requested_date
+            and _has_recording_failure_analysis_hints(thread_context_for_scope)
+        )
 
         if _is_barcode_device_file_probe_request(question, barcode):
             if not s.S3_QUERY_ENABLED:
@@ -988,6 +1054,123 @@ def create_app() -> App:
             except Exception:
                 logger.exception("Device file candidate lookup failed")
                 reply("파일 확인 대상 세션 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
+            return
+
+        if _is_recording_failure_analysis_request(question, barcode) or is_failure_phase2_scope_followup:
+            if not s.S3_QUERY_ENABLED:
+                reply("녹화 실패 원인 분석을 위해 S3_QUERY_ENABLED=true가 필요해")
+                return
+
+            if not s.DB_HOST or not s.DB_USERNAME or not s.DB_PASSWORD or not s.DB_DATABASE:
+                reply("녹화 실패 원인 분석을 위해 DB 접속 정보(DB_*)가 필요해")
+                return
+
+            try:
+                log_date, has_requested_date = _extract_log_date_with_presence(question)
+                context = _get_recordings_context()
+                summary = context.get("summary") or {}
+                recording_count = int(summary.get("recordingCount") or 0)
+                has_device_mapping = _has_recordings_device_mapping(context)
+                used_manual_scope = False
+                analysis_mode = "phase1_window"
+                result_text = ""
+                log_analysis_payload: dict[str, Any] | None = None
+
+                if has_requested_date:
+                    if recording_count <= 0 or not has_device_mapping:
+                        if not phase2_hospital_name or not phase2_room_name:
+                            reply(
+                                _build_phase2_scope_request_message(
+                                    barcode or "",
+                                    "recordings 장비 매핑이 없어 2차 입력이 필요해",
+                                    "*녹화 실패 원인 분석*",
+                                )
+                            )
+                            logger.info(
+                                "Responded with recording failure scope guidance in thread_ts=%s barcode=%s mode=scope_required",
+                                thread_ts,
+                                barcode,
+                            )
+                            return
+
+                        manual_device_contexts = _lookup_device_contexts_by_hospital_room(
+                            phase2_hospital_name,
+                            phase2_room_name,
+                        )
+                        if not manual_device_contexts:
+                            reply(
+                                _build_phase2_scope_request_message(
+                                    barcode or "",
+                                    "입력한 병원명/병실명으로 장비를 찾지 못했어. MDA 표시 이름과 정확히 일치하게 입력해줘",
+                                    "*녹화 실패 원인 분석*",
+                                )
+                            )
+                            logger.info(
+                                "Responded with recording failure scope guidance in thread_ts=%s barcode=%s mode=scope_not_found",
+                                thread_ts,
+                                barcode,
+                            )
+                            return
+
+                        used_manual_scope = True
+                        analysis_mode = "error_manual_scope"
+                        result_text, log_analysis_payload = _analyze_barcode_log_errors(
+                            _get_s3_client(),
+                            barcode or "",
+                            log_date,
+                            recordings_context=context,
+                            device_contexts=manual_device_contexts,
+                        )
+                    else:
+                        analysis_mode = "error"
+                        result_text, log_analysis_payload = _analyze_barcode_log_errors(
+                            _get_s3_client(),
+                            barcode or "",
+                            log_date,
+                            recordings_context=context,
+                        )
+                else:
+                    result_text, log_analysis_payload = _analyze_barcode_log_phase1_window(
+                        _get_s3_client(),
+                        barcode or "",
+                        recordings_context=context,
+                        max_days=cs.LOG_PHASE1_MAX_DAYS,
+                    )
+                    if "• 2차 조회를 위해 아래 3가지를 같이 입력해줘:" in result_text:
+                        reply(result_text.replace("*바코드 로그 분석 결과 (1차 자동 범위)*", "*녹화 실패 원인 분석*"))
+                        logger.info(
+                            "Responded with recording failure scope guidance in thread_ts=%s barcode=%s mode=phase1_scope_required",
+                            thread_ts,
+                            barcode,
+                        )
+                        return
+
+                failure_evidence = _build_recording_failure_analysis_evidence(
+                    question=question,
+                    summary_payload=log_analysis_payload,
+                )
+                request_payload = failure_evidence.get("request") if isinstance(failure_evidence, dict) else None
+                if isinstance(request_payload, dict):
+                    request_payload["mode"] = analysis_mode
+                    request_payload["phase2HospitalName"] = phase2_hospital_name
+                    request_payload["phase2RoomName"] = phase2_room_name
+                    request_payload["usedManualScope"] = used_manual_scope
+                _attach_recordings_context_to_evidence(failure_evidence, context)
+                fallback_text = _render_recording_failure_analysis_fallback(failure_evidence)
+                _reply_with_retrieval_synthesis(
+                    fallback_text,
+                    failure_evidence,
+                    route_name="recording failure analysis",
+                    max_tokens=s.RECORDING_FAILURE_ANALYSIS_MAX_TOKENS,
+                )
+            except ValueError as exc:
+                reply(f"녹화 실패 원인 분석 요청 형식 오류: {exc}")
+            except (BotoCoreError, ClientError, pymysql.MySQLError, RuntimeError):
+                logger.exception("Recording failure analysis failed")
+                reply("녹화 실패 원인 분석 중 오류가 발생했어. DB 연결/S3 권한/로그 경로를 확인해줘")
+            except Exception:
+                logger.exception("Recording failure analysis failed")
+                reply("녹화 실패 원인 분석 중 오류가 발생했어. 잠시 후 다시 시도해줘")
             return
 
         if _is_barcode_log_analysis_request(question, barcode) or is_phase2_scope_followup:

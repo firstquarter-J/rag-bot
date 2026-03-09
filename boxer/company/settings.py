@@ -1,5 +1,6 @@
 import os
 import re
+from pathlib import Path
 
 HYUN_USER_ID = os.getenv("HYUN_USER_ID", "").strip()
 MARK_USER_ID = os.getenv("MARK_USER_ID", "").strip()
@@ -62,6 +63,19 @@ else:
         for user_id in (HYUN_USER_ID, MARK_USER_ID)
         if user_id
     }
+
+MOMMYBOX_REFERENCE_ROOT = os.getenv(
+    "MOMMYBOX_REFERENCE_ROOT",
+    "/home/ec2-user/reference-repos/mmb-mommybox-v2",
+).strip()
+MOMMYBOX_REF_V211300_PATH = os.getenv(
+    "MOMMYBOX_REF_V211300_PATH",
+    str(Path(MOMMYBOX_REFERENCE_ROOT) / "v2.11.300"),
+).strip()
+MOMMYBOX_REF_LEGACY_PATH = os.getenv(
+    "MOMMYBOX_REF_LEGACY_PATH",
+    str(Path(MOMMYBOX_REFERENCE_ROOT) / "legacy"),
+).strip()
 
 
 def apply_legacy_db_compat(core_settings: object) -> None:

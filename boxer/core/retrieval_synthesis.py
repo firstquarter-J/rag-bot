@@ -218,6 +218,29 @@ def _build_route_specific_rules(evidence_payload: Any) -> str:
         return ""
 
     route = str(evidence_payload.get("route") or "").strip().lower()
+    if route == "recording_failure_analysis":
+        return (
+            "\n"
+            "7) 이 작업은 녹화 실패 원인 분석이다. 원문 로그를 길게 반복하지 마.\n"
+            "8) 아래 형식 그대로만 답해:\n"
+            "   *녹화 실패 원인 분석*\n"
+            "   • 핵심 원인:\n"
+            "   • 운영 근거:\n"
+            "   • 코드 근거:\n"
+            "   • 영향:\n"
+            "   • 권장 조치:\n"
+            "   • 확실도:\n"
+            "9) 반드시 한국어만 사용해. 영어 설명, 자기 사고 과정, 중간 추론, 검토 문장은 절대 쓰지 마.\n"
+            "10) 제공된 evidence만 사용해. 운영 근거가 코드 근거보다 우선이다.\n"
+            "11) 추정이면 반드시 '추정:'으로 시작해.\n"
+            "12) 운영 근거에는 종료 상태, 녹화 결과, 첫 ffmpeg 오류, restart, DB 영상 기록, 장비 파일 여부처럼 실제 관찰값만 써.\n"
+            "13) 코드 근거는 제공된 snippet 경로와 그 의미만 짧게 설명해. 코드 근거가 없으면 '없음'이라고 써.\n"
+            "14) restartDetected가 있으면 `정상 녹화 실패로 판단`이라고 확정형으로 써.\n"
+            "15) ffmpeg timestamp/DTS/PTS/invalid dropping 계열이면 캡처보드 연결 불량 또는 캡처보드 고장을 우선 의심한다고 적어.\n"
+            "16) Endpoint/Uploader/JWT/getaddrinfo EAI_AGAIN 계열만 있으면 녹화 실패 원인으로 단정하지 말고 통신/업로드 이상으로 설명해.\n"
+            "17) evidence에 DB 영상 기록이 있으면 업로드 최종 성공 근거로 같이 해석해.\n"
+            "18) 8줄 안팎으로 짧게 끝내. 장황한 설명 금지."
+        )
     if route == "barcode_log_error_summary":
         return (
             "\n"
