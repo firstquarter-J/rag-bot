@@ -35,12 +35,20 @@ _RESTART_NODE_VERSION_PATTERN = re.compile(r"node\.js version:\s*(.+)$", re.IGNO
 _RESTART_PLATFORM_PATTERN = re.compile(r"platform:\s*(.+)$", re.IGNORECASE)
 _RESTART_START_TIME_PATTERN = re.compile(r"start time:\s*(.+)$", re.IGNORECASE)
 _HOSPITAL_SCOPE_PATTERN = re.compile(
-    r"(?:^|\s)병원(?:명)?\s*[:=]?\s*(.+?)(?=\s*(?:병실(?:명)?|진료실명|날짜|로그|분석)\s*[:=]?|$)"
+    r"(?:^|\s)병원(?:명)?\s*[:=]?\s*(.+?)(?=\s*(?:병실(?:명)?|진료실명|날짜|로그|분석|(?:초음파\s*)?영상|비디오|동영상|녹화|캡처|스냅샷|개수|갯수|수|몇\s*개|있나|있는지|있어|유무|존재|조회|목록|다운로드|다운)\s*[:=]?|$)"
 )
 _ROOM_SCOPE_PATTERN = re.compile(
     r"(?:^|[\s)])(?:병실(?:명)?|진료실명)\s*[:=]?\s*(.+?)(?=\s*(?:날짜|로그|분석)\s*[:=]?|$)"
 )
 _ROOM_TOKEN_PATTERN = re.compile(r"([^\s`'\",]*(?:진료실|병실)[^\s`'\",]*)")
+_LEADING_HOSPITAL_SCOPE_PATTERN = re.compile(
+    r"^\s*(.+?)\s+(?:(?:초음파\s*)?영상|비디오|동영상|녹화|캡처|스냅샷|병원|병실|진료실)(?:\s|$)",
+    re.IGNORECASE,
+)
+_LEADING_HOSPITAL_KEYWORD_SCOPE_PATTERN = re.compile(
+    r"^\s*(.+?)\s+병원\s+(?:(?:초음파\s*)?영상|비디오|동영상|녹화|캡처|스냅샷|개수|갯수|수|몇\s*개|있나|있는지|있어|유무|존재|조회|목록|다운로드|다운)(?:\s|$)",
+    re.IGNORECASE,
+)
 _HOSPITAL_SEQ_PATTERN = re.compile(r"(?:hospitalseq|병원seq)\s*[:=]?\s*(\d+)", re.IGNORECASE)
 _HOSPITAL_ROOM_SEQ_PATTERN = re.compile(
     r"(?:hospitalroomseq|hospital_room_seq|병실seq)\s*[:=]?\s*(\d+)",
@@ -2142,10 +2150,32 @@ def _extract_hospital_room_scope(question: str) -> tuple[str | None, str | None]
         normalized = re.sub(r"^\s*(?:병실(?:명)?|진료실명)\s*[:=]?\s*", "", normalized)
         normalized = re.sub(r"^\s*날짜\s*[:=]?\s*", "", normalized)
         normalized = re.sub(r"\s*(?:로그|분석)\s*$", "", normalized)
+        normalized = re.sub(
+            r"\s*(?:(?:초음파\s*)?영상|비디오|동영상|녹화|캡처|스냅샷|개수|갯수|수|몇\s*개|있나|있는지|있어|유무|존재|조회|목록|다운로드|다운)\s*$",
+            "",
+            normalized,
+            flags=re.IGNORECASE,
+        )
         return normalized.strip()
+
+    def _is_scope_noise(value: str) -> bool:
+        cleaned = " ".join(str(value or "").split()).strip()
+        if not cleaned:
+            return True
+        return bool(
+            re.fullmatch(
+                r"(?:(?:초음파\s*)?영상|비디오|동영상|녹화|캡처|스냅샷|개수|갯수|수|몇\s*개|있나|있는지|있어|유무|존재|조회|목록|다운로드|다운)(?:\s+(?:개수|갯수|수|조회|목록))?",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+        )
 
     hospital_name = _clean(hospital_match.group(1)) if hospital_match else ""
     room_name = _clean(room_match.group(1)) if room_match else ""
+    if _is_scope_noise(hospital_name):
+        hospital_name = ""
+    if _is_scope_noise(room_name):
+        room_name = ""
 
     if hospital_name and room_name:
         return (hospital_name or None, room_name or None)
@@ -2181,11 +2211,48 @@ def _extract_hospital_room_scope(question: str) -> tuple[str | None, str | None]
         hospital_name = hospital_candidate
 
     if not hospital_name and not room_name:
+        leading_hospital_keyword_match = _LEADING_HOSPITAL_KEYWORD_SCOPE_PATTERN.search(text)
+        if leading_hospital_keyword_match:
+            hospital_name = _clean(leading_hospital_keyword_match.group(1))
+
+    if not hospital_name and not room_name:
         cleaned_fallback = _clean(fallback_text)
         if any(token in cleaned_fallback for token in ("병원", "의원", "클리닉", "센터")):
             hospital_name = cleaned_fallback
 
     return (hospital_name or None, room_name or None)
+
+
+def _extract_leading_hospital_scope(question: str) -> str | None:
+    text = re.sub(r"<@[^>]+>", " ", str(question or "")).strip()
+    match = _LEADING_HOSPITAL_KEYWORD_SCOPE_PATTERN.search(text)
+    if not match:
+        match = _LEADING_HOSPITAL_SCOPE_PATTERN.search(text)
+    if not match:
+        return None
+
+    candidate = " ".join(match.group(1).split()).strip().strip("`'\"")
+    candidate = re.sub(r"(?<!\d)\d{11}(?!\d)", " ", candidate)
+    candidate = _KOREAN_YMD_PATTERN.sub(" ", candidate)
+    candidate = _NUMERIC_YMD_PATTERN.sub(" ", candidate)
+    candidate = _KOREAN_MD_PATTERN.sub(" ", candidate)
+    candidate = _NUMERIC_MD_PATTERN.sub(" ", candidate)
+    candidate = _NUMERIC_MD_DASH_PATTERN.sub(" ", candidate)
+    candidate = _COMPACT_YYYYMMDD_PATTERN.sub(" ", candidate)
+    candidate = _COMPACT_YYMMDD_PATTERN.sub(" ", candidate)
+    candidate = _COMPACT_MMDD_PATTERN.sub(" ", candidate)
+    candidate = re.sub(
+        r"\b(?:개수|갯수|수|몇\s*개|있나|있는지|있어|유무|존재|조회|목록|다운로드|다운|원인|분석|실패|로그)\b",
+        " ",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = " ".join(candidate.split()).strip()
+    if not candidate:
+        return None
+    if any(token in candidate for token in ("fileid", "capturedat", "hospitalseq", "hospitalroomseq")):
+        return None
+    return candidate or None
 
 
 def _extract_phase1_date_window(recordings_context: dict[str, Any]) -> tuple[date, date] | None:

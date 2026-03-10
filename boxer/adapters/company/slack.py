@@ -24,6 +24,7 @@ from boxer.routers.company.barcode_log import (
     _build_phase2_scope_request_message,
     _extract_capture_seq_filters,
     _extract_hospital_room_scope,
+    _extract_leading_hospital_scope,
     _extract_log_date,
     _extract_log_date_with_presence,
     _extract_year_filter,
@@ -1425,6 +1426,8 @@ def create_app() -> App:
 
         structured_target_year = _extract_year_filter(question)
         structured_hospital_name, structured_room_name = _extract_hospital_room_scope(question)
+        if not structured_hospital_name:
+            structured_hospital_name = _extract_leading_hospital_scope(question)
         structured_hospital_seq, structured_hospital_room_seq = _extract_capture_seq_filters(question)
 
         if _is_hospitals_filter_query_request(
