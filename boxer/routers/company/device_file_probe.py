@@ -944,6 +944,7 @@ def _render_file_candidate_result(
             file_names: list[str] = []
             seen_files: set[str] = set()
             download_items: list[dict[str, Any]] = []
+            seen_download_names: set[str] = set()
             download_failures: list[str] = []
 
             for session in record.get("sessions") or []:
@@ -964,7 +965,12 @@ def _render_file_candidate_result(
                     if isinstance(item, dict)
                 ]
                 if download_entries:
-                    download_items.extend(download_entries)
+                    for item in download_entries:
+                        file_name = _display_value(item.get("fileName"), default="")
+                        if not file_name or file_name in seen_download_names:
+                            continue
+                        seen_download_names.add(file_name)
+                        download_items.append(item)
                 else:
                     failure_reason = _display_device_probe_reason(download.get("reason"))
                     if failure_reason not in download_failures:
@@ -1282,6 +1288,8 @@ def _locate_barcode_file_candidates(
         for record in records:
             device_probe = _probe_device_files_for_record(record)
             record["deviceProbe"] = device_probe
+            download_cache: dict[tuple[str, int, tuple[str, ...]], dict[str, Any]] = {}
+            upload_cache: dict[tuple[str, int, tuple[str, ...], str], dict[str, Any]] = {}
             results_by_file_id = {
                 str(item.get("fileId") or "").strip(): item
                 for item in (device_probe.get("results") or [])
@@ -1296,41 +1304,55 @@ def _locate_barcode_file_candidates(
                     if isinstance(agent_ssh, dict):
                         host = str(agent_ssh.get("host") or "").strip()
                         port = int(agent_ssh.get("port") or 0)
-                        remote_files = [
+                        remote_files = tuple(
+                            dict.fromkeys(
+                                [
                             _display_value(item, default="")
                             for item in (probe.get("files") or [])
                             if _display_value(item, default="")
-                        ]
-                        if host and port and remote_files:
-                            session["download"] = _download_device_files_to_s3(
-                                host,
-                                port,
-                                remote_files,
+                                ]
                             )
+                        )
+                        if host and port and remote_files:
+                            cache_key = (host, port, remote_files)
+                            if cache_key not in download_cache:
+                                download_cache[cache_key] = _download_device_files_to_s3(
+                                    host,
+                                    port,
+                                    list(remote_files),
+                                )
+                            session["download"] = download_cache[cache_key]
                 if recover_remote_files and probe and probe.get("ok"):
                     agent_ssh = device_probe.get("agentSsh") if isinstance(device_probe, dict) else None
                     if isinstance(agent_ssh, dict):
                         host = str(agent_ssh.get("host") or "").strip()
                         port = int(agent_ssh.get("port") or 0)
-                        remote_files = [
+                        remote_files = tuple(
+                            dict.fromkeys(
+                                [
                             _display_value(item, default="")
                             for item in (probe.get("files") or [])
                             if _display_value(item, default="")
-                        ]
-                        if host and port and remote_files:
-                            session["upload"] = _upload_device_files_to_uploader(
-                                host,
-                                port,
-                                remote_files,
-                                barcode=barcode,
-                                device_name=_display_value(record.get("deviceName"), default=""),
-                                file_id=file_id,
-                                log_date=log_date,
-                                started_time=_display_value(session.get("startedRecordingTime"), default=""),
-                                added_time=_display_value(session.get("addedRecordingTime"), default=""),
-                                spawned_time=_display_value(session.get("spawnedRecordingTime"), default=""),
-                                session_start_time=_display_value(session.get("startTime"), default=""),
+                                ]
                             )
+                        )
+                        if host and port and remote_files:
+                            cache_key = (host, port, remote_files, file_id)
+                            if cache_key not in upload_cache:
+                                upload_cache[cache_key] = _upload_device_files_to_uploader(
+                                    host,
+                                    port,
+                                    list(remote_files),
+                                    barcode=barcode,
+                                    device_name=_display_value(record.get("deviceName"), default=""),
+                                    file_id=file_id,
+                                    log_date=log_date,
+                                    started_time=_display_value(session.get("startedRecordingTime"), default=""),
+                                    added_time=_display_value(session.get("addedRecordingTime"), default=""),
+                                    spawned_time=_display_value(session.get("spawnedRecordingTime"), default=""),
+                                    session_start_time=_display_value(session.get("startTime"), default=""),
+                                )
+                            session["upload"] = upload_cache[cache_key]
 
     result_text = _render_file_candidate_result(
         barcode=barcode,

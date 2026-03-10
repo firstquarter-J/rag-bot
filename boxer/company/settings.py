@@ -53,6 +53,9 @@ DEVICE_FILE_SEARCH_PATHS = [
     ).split(",")
     if item.strip()
 ]
+DEVICE_FILE_RECOVERY_ENABLED = (
+    os.getenv("DEVICE_FILE_RECOVERY_ENABLED", "false").strip().lower() == "true"
+)
 BOX_UPLOADER_BASE_URL = os.getenv(
     "BOX_UPLOADER_BASE_URL",
     "https://stream.kr.mmtalkbox.com",

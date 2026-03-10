@@ -284,7 +284,7 @@ def _collect_device_download_records(payload: dict[str, Any]) -> list[dict[str, 
         file_names: list[str] = []
         seen_files: set[str] = set()
         download_links: list[dict[str, str]] = []
-        seen_links: set[tuple[str, str]] = set()
+        seen_links: set[str] = set()
 
         for session in record.get("sessions") or []:
             if not isinstance(session, dict):
@@ -308,7 +308,7 @@ def _collect_device_download_records(payload: dict[str, Any]) -> list[dict[str, 
                 url = str(item.get("url") or "").strip()
                 if not file_name or not url:
                     continue
-                dedupe_key = (file_name, url)
+                dedupe_key = file_name
                 if dedupe_key in seen_links:
                     continue
                 seen_links.add(dedupe_key)
@@ -380,6 +380,33 @@ def _render_device_download_thread_notice(
         for file_name in file_names:
             lines.append(f"  - `{file_name}`")
         lines.append(f"• 다운로드 링크: DM으로 보냈어 (`{len(record.get('downloadLinks') or [])}개`)")
+    return "\n".join(lines)
+
+
+def _render_device_download_dm_failure_notice(
+    barcode: str,
+    log_date: str,
+    records: list[dict[str, Any]],
+    *,
+    used_expanded_scope: bool = False,
+) -> str:
+    lines = [
+        "*장비 영상 다운로드 결과*",
+        f"• 바코드: `{barcode}`",
+        f"• 날짜: `{log_date}`",
+    ]
+    if used_expanded_scope:
+        lines.append("• 참고: 매핑 장비에서 세션을 못 찾아 동일 병원 장비까지 확장 검색했어")
+    for record in records:
+        lines.append("")
+        lines.append(f"• 장비: `{record['deviceName']}`")
+        lines.append(f"• 병원: `{record['hospitalName']}`")
+        lines.append(f"• 병실: `{record['roomName']}`")
+        file_names = record.get("fileNames") or []
+        lines.append(f"• 장비 파일 목록: `{len(file_names)}개`")
+        for file_name in file_names:
+            lines.append(f"  - `{file_name}`")
+    lines.append("• 다운로드 링크: DM 전송 실패. 봇 DM 권한을 확인해줘")
     return "\n".join(lines)
 
 
@@ -1261,6 +1288,9 @@ def create_app() -> App:
             if probe_remote_files and not _is_device_file_probe_allowed(user_id):
                 reply(_build_device_file_probe_permission_message())
                 return
+            if recover_remote_files and not cs.DEVICE_FILE_RECOVERY_ENABLED:
+                reply("장비 영상 복구 기능은 현재 비활성화돼 있어")
+                return
             if probe_remote_files and (
                 not cs.MDA_GRAPHQL_URL
                 or not cs.MDA_ADMIN_USER_PASSWORD
@@ -1349,7 +1379,15 @@ def create_app() -> App:
                             )
                             reply(thread_notice)
                         else:
-                            reply(result_text)
+                            failure_notice = _render_device_download_dm_failure_notice(
+                                barcode or "",
+                                log_date,
+                                download_records,
+                                used_expanded_scope=bool(
+                                    ((probe_payload.get("request") or {}).get("usedExpandedScope"))
+                                ),
+                            )
+                            reply(failure_notice)
                     else:
                         reply(result_text)
                 else:

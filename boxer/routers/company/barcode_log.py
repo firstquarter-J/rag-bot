@@ -947,6 +947,65 @@ def _summarize_motion_session(
     }
 
 
+_DUPLICATE_BARCODE_RESCAN_MAX_SECONDS = 1
+_SESSION_PROGRESS_SIGNAL_HINTS = (
+    "starting motion detection",
+    "motion detection process initiated successfully",
+    "motion detection :",
+    "motion detection passed",
+    "motion detected for",
+    "started recording",
+    "spawned motion ffmpeg",
+    "spawned recording ffmpeg",
+    "addrecording(",
+)
+
+
+def _session_has_progress_signals_between(
+    lines: list[str],
+    start_line_no: int,
+    duplicate_line_no: int,
+) -> bool:
+    if duplicate_line_no - start_line_no <= 1:
+        return False
+
+    start_index = max(0, start_line_no)
+    end_index = max(start_index, duplicate_line_no - 1)
+    for line in lines[start_index:end_index]:
+        lowered = str(line or "").lower()
+        if any(hint in lowered for hint in _SESSION_PROGRESS_SIGNAL_HINTS):
+            return True
+    return False
+
+
+def _should_merge_same_barcode_rescan(
+    lines: list[str],
+    active: dict[str, Any] | None,
+    duplicate_line_no: int,
+    duplicate_time_label: str,
+) -> bool:
+    if active is None:
+        return False
+
+    start_line_no = int(active.get("start_line_no") or 0)
+    if start_line_no <= 0 or duplicate_line_no <= start_line_no:
+        return False
+
+    start_seconds = _time_label_to_seconds(active.get("start_time_label"))
+    duplicate_seconds = _time_label_to_seconds(duplicate_time_label)
+    if start_seconds is None or duplicate_seconds is None:
+        return False
+
+    elapsed = duplicate_seconds - start_seconds
+    if elapsed < 0 or elapsed > _DUPLICATE_BARCODE_RESCAN_MAX_SECONDS:
+        return False
+
+    if _session_has_progress_signals_between(lines, start_line_no, duplicate_line_no):
+        return False
+
+    return True
+
+
 def _extract_recording_sessions(
     lines: list[str],
     barcode: str,
@@ -977,6 +1036,13 @@ def _extract_recording_sessions(
 
         if token == normalized_barcode:
             if active is not None:
+                if _should_merge_same_barcode_rescan(
+                    lines,
+                    active,
+                    line_no,
+                    time_label,
+                ):
+                    continue
                 active["end_line_no"] = max(int(active["start_line_no"]), line_no - 1)
                 sessions.append(active)
             active = {
