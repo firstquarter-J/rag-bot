@@ -1944,6 +1944,120 @@ def _append_session_timing_summary(
     lines.append(f"• 첫 ffmpeg 에러: `{error_time}`{detail_suffix}")
 
 
+def _build_session_card_context(
+    source_lines: list[str],
+    session: dict[str, Any],
+    session_restart_events: list[dict[str, Any]],
+    session_error_lines: list[tuple[int, str]],
+    diagnostic_scan_events: list[dict[str, Any]],
+    recordings_on_date_count: int | None,
+) -> dict[str, Any]:
+    recording_result, recovery_context, post_stop_context = _build_session_recording_result_text(
+        source_lines,
+        session,
+        session_restart_events,
+        session_error_lines,
+        diagnostic_scan_events,
+        recordings_on_date_count,
+    )
+
+    has_restart = bool(session_restart_events)
+    has_stop = session.get("stop_line_no") is not None
+    if has_restart:
+        termination_text = "마미박스 비정상 종료 (세션 중 재시작 감지)"
+    elif not has_stop:
+        termination_text = "비정상 종료 (종료 스캔 없음)"
+    else:
+        termination_text = f"정상 종료 ({_format_session_stop_marker(session)} 확인)"
+
+    anomaly_parts: list[str] = []
+    if has_restart:
+        anomaly_parts.append("재시작 감지")
+    if not has_stop:
+        anomaly_parts.append("종료 스캔 없음")
+
+    post_stop_text = ""
+    if isinstance(post_stop_context, dict):
+        post_stop_text = str(post_stop_context.get("displayText") or "").strip()
+        if post_stop_text:
+            anomaly_parts.append(post_stop_text)
+
+    first_ffmpeg_error = None
+    if not has_restart:
+        first_ffmpeg_error = _find_first_ffmpeg_error_context(session_error_lines, [session])
+    if first_ffmpeg_error:
+        anomaly_parts.append(
+            f"첫 ffmpeg 에러 `{_display_value(first_ffmpeg_error.get('timeLabel'), default='시간미상')}`"
+        )
+    elif session_error_lines:
+        anomaly_parts.append(f"error 라인 `{len(session_error_lines)}줄`")
+
+    unique_anomaly_parts: list[str] = []
+    for part in anomaly_parts:
+        normalized = str(part or "").strip()
+        if normalized and normalized not in unique_anomaly_parts:
+            unique_anomaly_parts.append(normalized)
+
+    return {
+        "terminationText": termination_text,
+        "recordingResult": recording_result,
+        "anomalyText": ", ".join(unique_anomaly_parts) if unique_anomaly_parts else "없음",
+        "firstFfmpegError": first_ffmpeg_error,
+        "postStopText": post_stop_text,
+        "recoveryContext": recovery_context,
+        "postStopContext": post_stop_context,
+    }
+
+
+def _is_session_card_abnormal(session_context: dict[str, Any]) -> bool:
+    termination_text = str(session_context.get("terminationText") or "")
+    recording_result = str(session_context.get("recordingResult") or "")
+    anomaly_text = str(session_context.get("anomalyText") or "")
+    if termination_text and termination_text != "정상 종료":
+        if "정상 종료" not in termination_text:
+            return True
+    if recording_result != "정상 녹화로 판단":
+        return True
+    return anomaly_text != "없음"
+
+
+def _append_session_card(
+    lines: list[str],
+    *,
+    index: int,
+    source_lines: list[str],
+    session: dict[str, Any],
+    session_scan_events: list[dict[str, Any]],
+    session_motion_events: list[dict[str, Any]],
+    session_restart_events: list[dict[str, Any]],
+    session_error_lines: list[tuple[int, str]],
+    diagnostic_scan_events: list[dict[str, Any]],
+    recordings_on_date_count: int | None,
+) -> None:
+    session_context = _build_session_card_context(
+        source_lines,
+        session,
+        session_restart_events,
+        session_error_lines,
+        diagnostic_scan_events,
+        recordings_on_date_count,
+    )
+    start_time = _display_value(session.get("start_time_label"), default="시간미상")
+    stop_time = _display_value(session.get("stop_time_label"), default="미확인")
+
+    lines.append("")
+    lines.append(f"*세션 {index}*")
+    lines.append(f"• 시간: `{start_time}` ~ `{stop_time}`")
+    lines.append(f"• 종료 상태: {session_context['terminationText']}")
+    lines.append(f"• 녹화 결과: {session_context['recordingResult']}")
+    lines.append(f"• 핵심 이상 징후: {session_context['anomalyText']}")
+    if recordings_on_date_count is not None:
+        lines.append(f"• DB 영상 기록: `{recordings_on_date_count}개`")
+    _append_restart_events_section(lines, session_restart_events)
+    _append_scan_events_section(lines, session_scan_events, session_motion_events)
+    _append_error_lines_section(lines, session_error_lines, show_all=True)
+
+
 def _append_session_sections(
     lines: list[str],
     source_lines: list[str],
@@ -1972,47 +2086,23 @@ def _append_session_sections(
         _append_error_lines_section(lines, error_lines, show_all=True)
         return
 
-    if len(sessions) <= 1:
-        _append_session_state_summary(
-            lines,
-            source_lines,
-            sessions,
-            restart_events,
-            error_lines,
-            diagnostic_scan_events,
-            recordings_on_date_count,
-        )
-        _append_session_timing_summary(lines, sessions, error_lines, restart_events)
-        _append_restart_events_section(lines, restart_events)
-        _append_scan_events_section(lines, scan_events, motion_events)
-        _append_error_lines_section(lines, error_lines, show_all=True)
-        return
-
-    lines.append(f"• 세션 수: *{len(sessions)}건*")
-
     for index, session in enumerate(sessions, start=1):
         session_scan_events = _events_in_session(scan_events, session)
         session_motion_events = _events_in_session(motion_events, session)
         session_restart_events = _events_in_session(restart_events, session)
         session_error_lines = _error_lines_in_session(error_lines, session)
-        start_time = _display_value(session.get("start_time_label"), default="시간미상")
-        stop_time = _display_value(session.get("stop_time_label"), default="미확인")
-
-        lines.append("")
-        lines.append(f"*세션 {index}* (`{start_time}` ~ `{stop_time}`)")
-        _append_session_state_summary(
+        _append_session_card(
             lines,
-            source_lines,
-            [session],
-            session_restart_events,
-            session_error_lines,
-            diagnostic_scan_events,
-            recordings_on_date_count if len(sessions) == 1 else None,
+            index=index,
+            source_lines=source_lines,
+            session=session,
+            session_scan_events=session_scan_events,
+            session_motion_events=session_motion_events,
+            session_restart_events=session_restart_events,
+            session_error_lines=session_error_lines,
+            diagnostic_scan_events=diagnostic_scan_events,
+            recordings_on_date_count=recordings_on_date_count,
         )
-        _append_session_timing_summary(lines, [session], session_error_lines, session_restart_events)
-        _append_restart_events_section(lines, session_restart_events)
-        _append_scan_events_section(lines, session_scan_events, session_motion_events)
-        _append_error_lines_section(lines, session_error_lines, show_all=True)
 
 
 def _build_log_analysis_payload(
@@ -2057,6 +2147,21 @@ def _build_log_analysis_payload(
         "records": records,
         "errorGroups": _build_error_groups(all_error_items),
     }
+
+
+def _count_abnormal_sessions_in_records(records: list[dict[str, Any]]) -> int:
+    total = 0
+    for record in records:
+        for detail in record.get("sessionDetails") or []:
+            if bool(detail.get("restartDetected")):
+                total += 1
+                continue
+            if not bool(detail.get("normalClosed")):
+                total += 1
+                continue
+            if _display_value(detail.get("recordingResult"), default="") != "정상 녹화로 판단":
+                total += 1
+    return total
 
 
 def _append_session_summaries(
@@ -2479,6 +2584,8 @@ def _analyze_barcode_log_phase1_window(
     found_log_files = 0
     matched_scope_count = 0
     total_sessions = 0
+    devices_with_session = 0
+    displayed_device_index = 0
     analysis_records: list[dict[str, Any]] = []
     lines = [
         title,
@@ -2488,6 +2595,7 @@ def _analyze_barcode_log_phase1_window(
     ]
     if omitted_device_count > 0:
         lines.append(f"• 참고: 장비가 많아서 상위 `{len(target_device_contexts)}개`만 분석했어")
+    header_line_count = len(lines)
 
     for date_label in target_date_labels:
         for device_context in target_device_contexts:
@@ -2536,6 +2644,8 @@ def _analyze_barcode_log_phase1_window(
 
             matched_scope_count += 1
             total_sessions += len(sessions)
+            devices_with_session += 1
+            displayed_device_index += 1
             error_lines = _find_error_lines(source_lines)
             session_events = [
                 event
@@ -2582,9 +2692,12 @@ def _analyze_barcode_log_phase1_window(
             )
 
             lines.append("")
-            lines.append(f"*장비 `{device_name}` | 날짜 `{date_label}`*")
+            lines.append(f"*장비 {displayed_device_index}*")
+            lines.append(f"• 장비: `{device_name}`")
             lines.append(f"• 병원: `{hospital_name}`")
             lines.append(f"• 병실: `{room_name}`")
+            lines.append(f"• 세션 수: `{len(sessions)}건`")
+            lines.append(f"• 날짜: `{date_label}`")
             lines.append(f"• DB 영상 기록(날짜 기준): `{len(recordings_on_date_rows)}개`")
             _append_session_sections(
                 lines,
@@ -2613,6 +2726,12 @@ def _analyze_barcode_log_phase1_window(
             date_range=f"{start_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d}",
             records=[],
         )
+    abnormal_sessions = _count_abnormal_sessions_in_records(analysis_records)
+    lines[header_line_count:header_line_count] = [
+        f"• 확인 장비: `{devices_with_session}개`",
+        f"• 확인 세션: `{total_sessions}건`",
+        f"• 이상 세션: `{abnormal_sessions}건`",
+    ]
     max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 38000)
     result_text = _truncate_text("\n".join(lines), max_result_chars)
     return result_text, _build_log_analysis_payload(
@@ -2660,6 +2779,7 @@ def _analyze_barcode_log_scan_events(
     logs_found_any = 0
     logs_with_session = 0
     devices_with_session = 0
+    displayed_device_index = 0
     analysis_records: list[dict[str, Any]] = []
 
     lines = [
@@ -2670,9 +2790,10 @@ def _analyze_barcode_log_scan_events(
     ]
     if omitted_device_count > 0:
         lines.append(f"• 참고: 장비가 많아서 상위 `{len(target_device_contexts)}개`만 분석했어")
+    header_line_count = len(lines)
 
     def _analyze_device_context_batch(device_context_batch: list[dict[str, Any]]) -> None:
-        nonlocal total_session_count, logs_found_any, logs_with_session, devices_with_session
+        nonlocal total_session_count, logs_found_any, logs_with_session, devices_with_session, displayed_device_index
 
         for device_context in device_context_batch:
             device_name = str(device_context.get("deviceName") or "")
@@ -2728,8 +2849,11 @@ def _analyze_barcode_log_scan_events(
                 continue
 
             logs_with_session += 1
+            devices_with_session += 1
+            displayed_device_index += 1
             lines.append("")
-            lines.append(f"• 매핑 장비: `{device_name}`")
+            lines.append(f"*장비 {displayed_device_index}*")
+            lines.append(f"• 장비: `{device_name}`")
 
             hospital_name = _display_value(device_context.get("hospitalName"), default="미확인")
             room_name = _display_value(device_context.get("roomName"), default="미확인")
@@ -2757,6 +2881,7 @@ def _analyze_barcode_log_scan_events(
             lines.append(f"• 병원: `{hospital_name}`")
             lines.append(f"• 병실: `{room_name}`")
             lines.append(f"• 날짜: `{log_date}`")
+            lines.append(f"• 세션 수: `{len(sessions)}건`")
             lines.append(f"• DB 영상 기록(날짜 기준): `{len(recordings_on_date_rows)}개`")
             lines.append(f"• 분석 범위: 전체 `{len(source_lines)}줄`")
             _append_session_sections(
@@ -2770,7 +2895,6 @@ def _analyze_barcode_log_scan_events(
                 diagnostic_scan_events=events,
                 recordings_on_date_count=len(recordings_on_date_rows),
             )
-            devices_with_session += 1
 
     _analyze_device_context_batch(target_device_contexts)
 
@@ -2813,6 +2937,12 @@ def _analyze_barcode_log_scan_events(
             date_range=None,
             records=[],
         )
+    abnormal_sessions = _count_abnormal_sessions_in_records(analysis_records)
+    lines[header_line_count:header_line_count] = [
+        f"• 확인 장비: `{devices_with_session}개`",
+        f"• 확인 세션: `{total_session_count}건`",
+        f"• 이상 세션: `{abnormal_sessions}건`",
+    ]
     max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 38000)
     result_text = _truncate_text("\n".join(lines), max_result_chars)
     return result_text, _build_log_analysis_payload(
@@ -2862,6 +2992,7 @@ def _analyze_barcode_log_errors(
     logs_with_session = 0
     total_session_count = 0
     devices_with_session = 0
+    displayed_device_index = 0
     analysis_records: list[dict[str, Any]] = []
     lines = [
         "*바코드 로그 에러 분석 결과*",
@@ -2871,9 +3002,10 @@ def _analyze_barcode_log_errors(
     ]
     if omitted_device_count > 0:
         lines.append(f"• 참고: 장비가 많아서 상위 `{len(target_device_contexts)}개`만 분석했어")
+    header_line_count = len(lines)
 
     def _analyze_device_context_batch(device_context_batch: list[dict[str, Any]]) -> None:
-        nonlocal total_session_error_lines, logs_found_any, logs_with_session, total_session_count, devices_with_session
+        nonlocal total_session_error_lines, logs_found_any, logs_with_session, total_session_count, devices_with_session, displayed_device_index
 
         for device_context in device_context_batch:
             device_name = str(device_context.get("deviceName") or "")
@@ -2930,8 +3062,11 @@ def _analyze_barcode_log_errors(
                 continue
 
             logs_with_session += 1
+            devices_with_session += 1
+            displayed_device_index += 1
             lines.append("")
-            lines.append(f"• 매핑 장비: `{device_name}`")
+            lines.append(f"*장비 {displayed_device_index}*")
+            lines.append(f"• 장비: `{device_name}`")
 
             hospital_name = _display_value(device_context.get("hospitalName"), default="미확인")
             room_name = _display_value(device_context.get("roomName"), default="미확인")
@@ -2959,6 +3094,7 @@ def _analyze_barcode_log_errors(
             lines.append(f"• 병원: `{hospital_name}`")
             lines.append(f"• 병실: `{room_name}`")
             lines.append(f"• 날짜: `{log_date}`")
+            lines.append(f"• 세션 수: `{len(sessions)}건`")
             lines.append(f"• DB 영상 기록(날짜 기준): `{len(recordings_on_date_rows)}개`")
             lines.append(f"• 파일 크기: `{_format_size(log_data['content_length'])}`")
             lines.append(f"• 분석 범위: 전체 `{len(source_lines)}줄`")
@@ -2973,7 +3109,6 @@ def _analyze_barcode_log_errors(
                 diagnostic_scan_events=events,
                 recordings_on_date_count=len(recordings_on_date_rows),
             )
-            devices_with_session += 1
 
     _analyze_device_context_batch(target_device_contexts)
 
@@ -3016,6 +3151,12 @@ def _analyze_barcode_log_errors(
             date_range=None,
             records=[],
         )
+    abnormal_sessions = _count_abnormal_sessions_in_records(analysis_records)
+    lines[header_line_count:header_line_count] = [
+        f"• 확인 장비: `{devices_with_session}개`",
+        f"• 확인 세션: `{total_session_count}건`",
+        f"• 이상 세션: `{abnormal_sessions}건`",
+    ]
     max_result_chars = max(s.S3_QUERY_MAX_RESULT_CHARS, 38000)
     result_text = _truncate_text("\n".join(lines), max_result_chars)
     return result_text, _build_log_analysis_payload(
