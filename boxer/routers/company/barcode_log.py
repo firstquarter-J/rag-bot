@@ -2769,14 +2769,13 @@ def _analyze_barcode_log_scan_events(
 
     _analyze_device_context_batch(target_device_contexts)
 
-    if logs_with_session == 0:
-        expanded_device_contexts = _expand_device_contexts_to_recordings_hospital_scope(
-            recordings_context,
-            target_device_contexts,
-        )
-        if expanded_device_contexts:
-            lines.append("• 참고: 매핑 장비에서 세션을 못 찾아 동일 병원 장비로 확장 검색했어")
-            _analyze_device_context_batch(expanded_device_contexts[: max(1, min(50, cs.LOG_ANALYSIS_MAX_DEVICES * 4))])
+    expanded_device_contexts = _expand_device_contexts_to_recordings_hospital_scope(
+        recordings_context,
+        target_device_contexts,
+    )
+    if expanded_device_contexts:
+        lines.append("• 참고: 동일 병원 장비까지 확장 검색했어")
+        _analyze_device_context_batch(expanded_device_contexts[: max(1, min(50, cs.LOG_ANALYSIS_MAX_DEVICES * 4))])
 
     if logs_found_any == 0:
         result_text = (
@@ -2973,14 +2972,13 @@ def _analyze_barcode_log_errors(
 
     _analyze_device_context_batch(target_device_contexts)
 
-    if logs_with_session == 0:
-        expanded_device_contexts = _expand_device_contexts_to_recordings_hospital_scope(
-            recordings_context,
-            target_device_contexts,
-        )
-        if expanded_device_contexts:
-            lines.append("• 참고: 매핑 장비에서 세션을 못 찾아 동일 병원 장비로 확장 검색했어")
-            _analyze_device_context_batch(expanded_device_contexts[: max(1, min(50, cs.LOG_ANALYSIS_MAX_DEVICES * 4))])
+    expanded_device_contexts = _expand_device_contexts_to_recordings_hospital_scope(
+        recordings_context,
+        target_device_contexts,
+    )
+    if expanded_device_contexts:
+        lines.append("• 참고: 동일 병원 장비까지 확장 검색했어")
+        _analyze_device_context_batch(expanded_device_contexts[: max(1, min(50, cs.LOG_ANALYSIS_MAX_DEVICES * 4))])
 
     if logs_found_any == 0:
         result_text = (
