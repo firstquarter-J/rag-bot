@@ -988,7 +988,7 @@ def _should_merge_same_barcode_rescan(
         return False
 
     start_line_no = int(active.get("start_line_no") or 0)
-    if start_line_no <= 0 or duplicate_line_no <= start_line_no:
+    if start_line_no < 0 or duplicate_line_no <= start_line_no:
         return False
 
     start_seconds = _time_label_to_seconds(active.get("start_time_label"))
