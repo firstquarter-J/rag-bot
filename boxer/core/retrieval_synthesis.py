@@ -268,6 +268,25 @@ def _build_route_specific_rules(evidence_payload: Any) -> str:
             "22) evidence에 날짜 기준 DB 영상 기록(recordingsOnDateCount)이 있으면 반드시 같이 해석해. DB 영상 기록이 있으면 업로드 최종 성공 근거로 보고, 없으면 업로드 실패 가능성을 언급해.\n"
             "23) 날짜 기준 DB 영상 기록이 없고 stalled/ffmpeg 오류가 함께 있으면 `녹화 & 업로드 실패로 판단`이라고 적어.\n"
         )
+    if route == "barcode_log_error_summary_session":
+        return (
+            "\n"
+            "7) 이 작업은 단일 세션 로그 에러 해석이다. 세션 하나만 분석해.\n"
+            "8) 아래 형식 그대로만 답해:\n"
+            "   • 바코드: `...` | 병원: `...` | 병실: `...` | 날짜: `...` | 시간: `...`\n"
+            "   • 핵심 원인:\n"
+            "   • 영향:\n"
+            "   • 조치:\n"
+            "9) 반드시 한국어만 사용해. 영어 설명, 자기 사고 과정, 중간 추론, 검토 문장은 절대 쓰지 마.\n"
+            "10) 제공된 evidence만 사용해. 추정이면 반드시 `추정:`으로 시작해.\n"
+            "11) `근거 로그`, `코드 근거`, `확실도`, 추가 섹션을 쓰지 마.\n"
+            "12) restartDetected가 있으면 `정상 녹화 실패로 판단`이라고 확정형으로 써.\n"
+            "13) 날짜 기준 DB 영상 기록이 없고 stalled/ffmpeg 오류가 함께 있으면 `녹화 & 업로드 실패로 판단`이라고 써.\n"
+            "14) ffmpeg timestamp/DTS/PTS/invalid dropping 계열이면 캡처보드 연결 불량 또는 캡처보드 고장을 우선 의심한다고 적어.\n"
+            "15) Endpoint/Uploader/JWT/getaddrinfo EAI_AGAIN 계열만 있으면 녹화 실패 원인으로 단정하지 말고 통신/업로드 이상으로 설명해.\n"
+            "16) 조치는 한 줄에 `/`로 이어서 최대 3개만 적어.\n"
+            "17) 4줄로 끝내. 장황한 설명 금지."
+        )
 
     if route != "barcode_log_analysis":
         return ""

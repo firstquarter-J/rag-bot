@@ -518,55 +518,98 @@ def create_app() -> App:
                 logger.exception("Retrieval synthesis failed for route=%s", route_name)
                 reply(fallback_text)
 
-        def _build_barcode_log_error_summary_fallback(summary_payload: dict[str, Any]) -> str:
-            summary = summary_payload.get("summary") if isinstance(summary_payload, dict) else None
-            records = summary_payload.get("records") if isinstance(summary_payload, dict) else None
-            if not isinstance(summary, dict) or not isinstance(records, list):
-                return ""
+        def _iter_barcode_log_error_summary_sessions(summary_payload: dict[str, Any]) -> list[dict[str, Any]]:
+            request = summary_payload.get("request") if isinstance(summary_payload, dict) else {}
+            records = summary_payload.get("records") if isinstance(summary_payload, dict) else []
+            barcode = str((request or {}).get("barcode") or "미확인").strip() or "미확인"
+            session_entries: list[dict[str, Any]] = []
+            if not isinstance(records, list):
+                return session_entries
 
-            first_record = records[0] if records and isinstance(records[0], dict) else {}
-            device_name = str(first_record.get("deviceName") or "미확인").strip() or "미확인"
-            hospital_name = str(first_record.get("hospitalName") or "미확인").strip() or "미확인"
-            room_name = str(first_record.get("roomName") or "미확인").strip() or "미확인"
-            date_label = str(first_record.get("date") or summary_payload.get("request", {}).get("date") or "미확인").strip() or "미확인"
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                session_details = record.get("sessionDetails")
+                if not isinstance(session_details, list):
+                    continue
+                for detail in session_details:
+                    if not isinstance(detail, dict):
+                        continue
+                    session_entries.append(
+                        {
+                            "barcode": barcode,
+                            "deviceName": str(record.get("deviceName") or "미확인").strip() or "미확인",
+                            "hospitalName": str(record.get("hospitalName") or "미확인").strip() or "미확인",
+                            "roomName": str(record.get("roomName") or "미확인").strip() or "미확인",
+                            "date": str(record.get("date") or (request or {}).get("date") or "미확인").strip() or "미확인",
+                            "recordingsOnDateCount": int(record.get("recordingsOnDateCount") or 0),
+                            "deviceSessionCount": int((record.get("sessions") or {}).get("sessionCount") or 0),
+                            "detail": detail,
+                        }
+                    )
+            return session_entries
 
-            restart_events = first_record.get("restartEvents") if isinstance(first_record, dict) else []
-            restart_event = restart_events[0] if isinstance(restart_events, list) and restart_events else {}
-            restart_time = str(restart_event.get("time") or "시간미상").strip() if isinstance(restart_event, dict) else "시간미상"
-            first_session_start_time = str(first_record.get("firstSessionStartTime") or "미확인").strip() or "미확인"
-            first_ffmpeg_error = first_record.get("firstFfmpegError") if isinstance(first_record, dict) else {}
-            ffmpeg_error_time = (
-                str(first_ffmpeg_error.get("timeLabel") or "시간미상").strip()
-                if isinstance(first_ffmpeg_error, dict)
-                else "시간미상"
+        def _is_interesting_barcode_log_error_session(session_entry: dict[str, Any]) -> bool:
+            detail = session_entry.get("detail") if isinstance(session_entry, dict) else {}
+            if not isinstance(detail, dict):
+                return False
+            recording_result = str(detail.get("recordingResult") or "").strip()
+            return (
+                bool(detail.get("restartDetected"))
+                or not bool(detail.get("normalClosed"))
+                or int(detail.get("errorLineCount") or 0) > 0
+                or (recording_result not in {"", "정상 녹화로 판단"})
             )
-            ffmpeg_error_elapsed = (
-                str(first_ffmpeg_error.get("elapsedFromSessionStart") or "").strip()
-                if isinstance(first_ffmpeg_error, dict)
-                else ""
-            )
-            recordings_on_date_count = int(first_record.get("recordingsOnDateCount") or 0) if isinstance(first_record, dict) else 0
 
-            error_groups = first_record.get("errorGroups") if isinstance(first_record, dict) else []
-            session_diagnostics = first_record.get("sessionDiagnostics") if isinstance(first_record, dict) else []
-            top_group = error_groups[0] if isinstance(error_groups, list) and error_groups else {}
-            severe_session = (
-                next(
-                    (
-                        item
-                        for item in (session_diagnostics or [])
-                        if isinstance(item, dict) and str(item.get("severity") or "") == "high"
-                    ),
-                    None,
-                )
-                if isinstance(session_diagnostics, list)
-                else None
-            )
-            top_component = str(top_group.get("component") or "미확인").strip() if isinstance(top_group, dict) else "미확인"
-            top_signature = str(top_group.get("signature") or "미확인").strip() if isinstance(top_group, dict) else "미확인"
-            top_count = int(top_group.get("count") or 0) if isinstance(top_group, dict) else 0
+        def _build_barcode_log_error_session_section(session_entry: dict[str, Any]) -> list[str]:
+            detail = session_entry.get("detail") if isinstance(session_entry, dict) else {}
+            if not isinstance(detail, dict):
+                return []
+
+            barcode = str(session_entry.get("barcode") or "미확인").strip() or "미확인"
+            device_name = str(session_entry.get("deviceName") or "미확인").strip() or "미확인"
+            hospital_name = str(session_entry.get("hospitalName") or "미확인").strip() or "미확인"
+            room_name = str(session_entry.get("roomName") or "미확인").strip() or "미확인"
+            date_label = str(session_entry.get("date") or "미확인").strip() or "미확인"
+            recordings_on_date_count = int(session_entry.get("recordingsOnDateCount") or 0)
+            session_index = int(detail.get("index") or 0)
+            start_time = str(detail.get("startTime") or "시간미상").strip() or "시간미상"
+            stop_time = str(detail.get("stopTime") or "미확인").strip() or "미확인"
+            stop_token = str(detail.get("stopToken") or "미확인").strip() or "미확인"
+            normal_closed = bool(detail.get("normalClosed"))
+            restart_detected = bool(detail.get("restartDetected"))
+            recording_result = str(detail.get("recordingResult") or "추가 확인 필요").strip() or "추가 확인 필요"
+            error_line_count = int(detail.get("errorLineCount") or 0)
+            error_groups = detail.get("errorGroups") if isinstance(detail.get("errorGroups"), list) else []
+            top_group = error_groups[0] if error_groups and isinstance(error_groups[0], dict) else {}
+            top_component = str(top_group.get("component") or "미확인").strip() or "미확인"
+            top_signature = str(top_group.get("signature") or "미확인").strip() or "미확인"
+            top_count = int(top_group.get("count") or 0)
+            first_ffmpeg_error = detail.get("firstFfmpegError") if isinstance(detail.get("firstFfmpegError"), dict) else {}
+            ffmpeg_time = str(first_ffmpeg_error.get("timeLabel") or "").strip()
+            ffmpeg_elapsed = str(first_ffmpeg_error.get("elapsedFromSessionStart") or "").strip()
+            session_diagnostic = detail.get("sessionDiagnostic") if isinstance(detail.get("sessionDiagnostic"), dict) else {}
+            diagnostic_severity = str(session_diagnostic.get("severity") or "").strip()
+            diagnostic_text = str(session_diagnostic.get("displayText") or "").strip()
+            finish_delay = str(session_diagnostic.get("finishDelay") or "").strip()
+            post_stop_device_error_count = int(session_diagnostic.get("postStopDeviceErrorCount") or 0)
+
             top_signature_lower = top_signature.lower()
             top_component_lower = top_component.lower()
+            is_ffmpeg_error = "ffmpeg" in top_signature_lower or "ffmpeg" in top_component_lower
+            is_standby_ffmpeg_error = "standby error" in top_signature_lower
+            is_ffmpeg_timestamp_error = any(
+                token in top_signature_lower
+                for token in ("invalid dropping", "non-monotonous dts", "dts ", "pts ", "timestamp")
+            )
+            is_recording_stalled = any(
+                isinstance(group, dict)
+                and any(
+                    token in str(group.get("signature") or "").strip().lower()
+                    for token in ("recording may be stalled", "recording critically stalled", "stalled")
+                )
+                for group in error_groups
+            )
             all_network_side_effect_errors = bool(error_groups) and all(
                 (
                     str(group.get("component") or "").strip().lower() in {"endpoint", "endpointclient", "uploader"}
@@ -589,163 +632,162 @@ def create_app() -> App:
                 for group in error_groups
                 if isinstance(group, dict)
             )
-            is_ffmpeg_error = "ffmpeg" in top_signature_lower or "ffmpeg" in top_component_lower
-            is_standby_ffmpeg_error = "standby error" in top_signature_lower
-            is_ffmpeg_timestamp_error = any(
-                token in top_signature_lower
-                for token in ("invalid dropping", "non-monotonous dts", "dts ", "timestamp")
-            )
-            is_recording_stalled = any(
-                isinstance(group, dict)
-                and any(
-                    token in str(group.get("signature") or "").strip().lower()
-                    for token in ("recording may be stalled", "recording critically stalled", "stalled")
-                )
-                for group in error_groups
-            )
 
-            abnormal_count = int(summary.get("abnormalSessionCount") or 0)
-            error_line_count = int(summary.get("errorLineCount") or 0)
-            restart_count = int(summary.get("restartEventCount") or 0)
-            all_closed_normally = bool((first_record.get("sessions") or {}).get("allClosedNormally"))
-
-            if restart_count > 0:
+            if restart_detected:
                 cause_line = "• 핵심 원인: 세션 중 장비 재시작이 확인돼 정상 녹화 실패로 판단해"
-            elif recordings_on_date_count <= 0 and (is_ffmpeg_error or is_recording_stalled or isinstance(severe_session, dict)):
+                impact_line = "• 영향: 세션 중 장비 재시작으로 정상 녹화 실패가 발생한 것으로 봐야 해"
+            elif not normal_closed:
+                cause_line = "• 핵심 원인: 종료 스캔이 없어 세션이 비정상 종료됐어"
+                impact_line = "• 영향: 종료 처리가 끝나지 않아 정상 녹화 실패로 봐야 해"
+            elif recordings_on_date_count <= 0 and (is_ffmpeg_error or is_recording_stalled or diagnostic_severity == "high"):
                 if is_recording_stalled and is_ffmpeg_error:
                     cause_line = "• 핵심 원인: 녹화 중 파일 증가율 저하(stall)와 ffmpeg 종료가 함께 확인됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
                 elif is_recording_stalled:
                     cause_line = "• 핵심 원인: 녹화 중 파일 증가율 저하(stall)가 반복됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
                 else:
                     cause_line = "• 핵심 원인: ffmpeg 오류가 확인됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
-            elif all_network_side_effect_errors and all_closed_normally and not isinstance(severe_session, dict):
+                impact_line = f"• 영향: 날짜 기준 DB 영상 기록이 `{recordings_on_date_count}개`라 녹화 파일 저장/업로드가 실패한 상태야"
+            elif all_network_side_effect_errors and normal_closed and diagnostic_severity != "high":
                 if recordings_on_date_count > 0:
-                    cause_line = "• 핵심 원인: JWT 갱신/상태 전송/업로드용 서버 통신 오류가 반복됐어. 하지만 날짜 기준 DB 영상 기록이 확인돼 녹화 실패 원인이라기보다 네트워크/DNS 통신 이상으로 봐야 해"
+                    cause_line = "• 핵심 원인: JWT 갱신/상태 전송/업로드 통신 오류가 있었지만 녹화 실패 원인이라기보다 네트워크/DNS 통신 이상으로 봐야 해"
+                    impact_line = f"• 영향: 날짜 기준 DB 영상 기록 `{recordings_on_date_count}개`가 있어 녹화는 성공했고 통신 오류는 별도야"
                 else:
-                    cause_line = "• 핵심 원인: 업로드/상태 전송 통신 오류가 반복됐고 날짜 기준 DB 영상 기록이 없어 업로드 실패 가능성을 의심해야 해"
-            elif isinstance(severe_session, dict):
-                cause_line = "• 핵심 원인: 초기 ffmpeg 오류보다 종료 처리 지연과 종료 후 장치 오류가 더 뚜렷해서 실제 영상 손상 가능성이 높아"
-            elif is_standby_ffmpeg_error and all_closed_normally:
+                    cause_line = "• 핵심 원인: 업로드/상태 전송 통신 오류가 반복됐고 날짜 기준 DB 영상 기록이 없어 업로드 실패 가능성이 있어"
+                    impact_line = "• 영향: 녹화 흐름은 종료됐지만 업로드/상태 전송 단계 실패 가능성이 있어"
+            elif diagnostic_severity == "high":
+                cause_line = "• 핵심 원인: 종료 처리 지연과 종료 후 장치 오류가 이어져 실제 영상 손상 가능성이 높아"
+                impact_line = f"• 영향: 종료는 됐지만 `{recording_result}` 상태로 봐야 해"
+            elif is_standby_ffmpeg_error and normal_closed:
                 cause_line = "• 핵심 원인: standby ffmpeg 오류가 확인돼 영상 손상 가능성을 의심해야 하고 캡처보드 이상을 우선 점검해야 해"
+                impact_line = f"• 영향: 종료는 정상이어도 `{recording_result}` 상태로 봐야 해"
             elif is_ffmpeg_timestamp_error:
-                cause_line = "• 핵심 원인: ffmpeg DTS/타임스탬프 이상이 확인돼 캡처보드 연결 불량 또는 캡처보드 고장을 우선 의심해"
+                cause_line = "• 핵심 원인: ffmpeg DTS/PTS 타임스탬프 이상이 확인돼 캡처보드 연결 불량 또는 캡처보드 고장을 우선 의심해"
+                impact_line = f"• 영향: 종료는 됐지만 `{recording_result}` 상태로 봐야 해"
             elif top_signature != "미확인" and top_count >= 2:
-                cause_line = f"• 핵심 원인: `{top_component}`에서 `{top_signature}` 오류가 반복돼 녹화 실패 가능성이 높아"
+                cause_line = f"• 핵심 원인: `{top_component}` 오류가 반복돼 원인 점검이 필요해"
+                impact_line = f"• 영향: error 라인 `{error_line_count}줄`이 확인됐고 `{recording_result}` 상태야"
             elif top_signature != "미확인" and top_count == 1:
-                cause_line = f"• 핵심 원인: `{top_component}`에서 `{top_signature}` 오류가 1회 확인돼 녹화 영향 여부 점검이 필요해"
+                cause_line = f"• 핵심 원인: `{top_component}` 오류가 1회 확인돼 영향 여부 점검이 필요해"
+                impact_line = f"• 영향: 종료 상태는 `{stop_token}` 기준 정상인데 `{recording_result}` 상태야"
             else:
-                cause_line = "• 핵심 원인: 로그상 주요 에러 1건이 확인돼 원인 점검이 필요해"
-
-            lines = [
-                "*에러 분석*",
-                cause_line,
-            ]
-            if restart_count > 0:
-                impact_line = (
-                    f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
-                    "세션 중 재시작이 확인돼 정상 녹화 실패로 판단해"
-                )
-            elif recordings_on_date_count <= 0 and (is_ffmpeg_error or is_recording_stalled or isinstance(severe_session, dict)):
-                impact_line = (
-                    f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
-                    f"날짜 기준 DB 영상 기록이 없고 error 라인 `{error_line_count}줄`이 확인돼 녹화 & 업로드 실패로 판단해"
-                )
-            elif all_network_side_effect_errors and all_closed_normally and not isinstance(severe_session, dict):
-                if recordings_on_date_count > 0:
-                    impact_line = (
-                        f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
-                        f"녹화 흐름과 종료 스캔은 정상이고 날짜 기준 DB 영상 기록 `{recordings_on_date_count}개`가 확인됐어. 상태 전송/스크린샷/업로드 통신 오류는 별도야"
-                    )
-                else:
-                    impact_line = (
-                        f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
-                        "녹화 흐름과 종료 스캔은 정상인데 업로드/상태 전송 통신 오류가 반복됐고 날짜 기준 DB 영상 기록이 없어 업로드 실패 가능성이 있어"
-                    )
-            elif isinstance(severe_session, dict):
-                impact_line = (
-                    f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
-                    "종료 스캔은 확인됐지만 종료 처리 이상이 이어져 실제 영상 손상 가능성이 높아"
-                )
-            elif abnormal_count > 0:
-                impact_line = (
-                    f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
-                    "종료 스캔이 없는 세션이 있어 정상 녹화 실패 가능성이 높아"
-                )
-            elif is_standby_ffmpeg_error and all_closed_normally:
-                impact_line = (
-                    f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
-                    f"standby ffmpeg 오류 `{error_line_count}줄`이 있어 종료 스캔은 정상이어도 영상 손상 가능성을 의심해야 해"
-                )
-            elif is_ffmpeg_error and all_closed_normally:
-                impact_line = (
-                    f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
-                    f"종료 스캔은 확인됐지만 ffmpeg 오류 `{error_line_count}줄`이 있어 영상 손상 가능성이 높아"
-                )
-            else:
-                impact_line = (
-                    f"• 영향: `{date_label}` `{hospital_name}` `{room_name}` 장비 `{device_name}`에서 "
-                    f"error 라인 `{error_line_count}줄`이 확인됐어"
-                )
-            lines.append(impact_line)
-
-            evidence_lines: list[str] = []
-            if restart_count > 0:
-                evidence_lines.append(f"- `{restart_time}` 장비 재시작 감지 (`Mommybox Starting...`)")
-            if is_ffmpeg_error and ffmpeg_error_time != "시간미상":
-                time_parts: list[str] = [f"첫 ffmpeg 오류 `{ffmpeg_error_time}`"]
-                if first_session_start_time != "미확인":
-                    time_parts.append(f"세션 시작 `{first_session_start_time}`")
-                if ffmpeg_error_elapsed:
-                    time_parts.append(f"시작 후 `{ffmpeg_error_elapsed}`")
-                evidence_lines.append(f"- {', '.join(time_parts)}")
-            if isinstance(severe_session, dict):
-                severe_parts: list[str] = []
-                finish_delay = str(severe_session.get("finishDelay") or "").strip()
-                if finish_delay:
-                    severe_parts.append(f"종료 처리 지연 `{finish_delay}`")
-                post_stop_device_error_count = int(severe_session.get("postStopDeviceErrorCount") or 0)
-                if post_stop_device_error_count > 0:
-                    severe_parts.append(f"종료 후 장치 오류 `{post_stop_device_error_count}건`")
-                if severe_parts:
-                    evidence_lines.append(f"- {' , '.join(severe_parts).replace(' ,', ',')}")
-            if top_count > 0 and top_signature != "미확인":
-                evidence_lines.append(f"- `{top_component}` `{top_signature}` `{top_count}회`")
-            if evidence_lines:
-                lines.append("• 근거 로그:")
-                lines.extend(evidence_lines)
-            if all_network_side_effect_errors:
-                lines.append(f"- 날짜 기준 DB 영상 기록 `{recordings_on_date_count}개`")
+                cause_line = "• 핵심 원인: 운영 근거상 추가 확인이 필요해"
+                impact_line = f"• 영향: 현재 판정은 `{recording_result}`이야"
 
             action_lines: list[str] = []
-            if all_network_side_effect_errors and all_closed_normally and not isinstance(severe_session, dict):
-                action_lines.append("- 장비 네트워크 상태와 DNS 해석(getaddrinfo EAI_AGAIN) 여부 확인")
-                action_lines.append("- status.kr.mmtalkbox.com / stream.kr.mmtalkbox.com 통신 가능 여부 확인")
-                action_lines.append("- JWT 갱신/상태 전송/업로드 재시도 로그만 별도로 점검")
-            elif is_ffmpeg_timestamp_error:
-                action_lines.append("- 캡처보드 케이블 체결 상태와 장치 교체 테스트를 가장 먼저 진행")
-            elif is_ffmpeg_error:
-                action_lines.append("- 캡처보드 연결 상태와 입력 신호를 가장 먼저 점검")
-            if restart_count > 0:
-                action_lines.append("- 전원 차단/전원 버튼 오입력 여부 확인")
+            if restart_detected:
+                action_lines.append("전원 차단/전원 버튼 오입력 여부 확인")
+            if is_ffmpeg_timestamp_error or is_standby_ffmpeg_error or is_ffmpeg_error:
+                action_lines.append("캡처보드 연결 상태와 입력 신호 점검")
+            if is_recording_stalled:
+                action_lines.append("저장 경로 쓰기 상태와 파일 증가율 저하 원인 확인")
             if top_signature != "미확인":
-                action_lines.append(f"- `{top_component}` 관련 장치/프로세스 상태 확인")
-            if is_ffmpeg_error:
-                action_lines.append("- ffmpeg 프로세스 상태와 영상 입력 장치 점유 여부 확인")
-            if "Device or resource busy" in top_signature:
-                action_lines.append("- `/dev/video0` 점유 프로세스와 캡처보드 상태 확인")
+                action_lines.append(f"{top_component} 관련 장치/프로세스 상태 확인")
             if not action_lines:
-                action_lines.append("- 동일 시각 장비 상태와 관련 프로세스 로그 확인")
-            lines.append("• 권장 조치:")
-            lines.extend(action_lines[:3])
-            lines.append(f"• 확실도: {'높음' if restart_count > 0 or top_count >= 2 else '중간'}")
-            return "\n".join(lines)
+                action_lines.append("동일 시각 장비 상태와 관련 프로세스 로그 확인")
 
-        def _is_bad_barcode_log_error_summary(text: str) -> bool:
+            time_label = f"{start_time} ~ {stop_time}" if stop_time != "미확인" else start_time
+            if ffmpeg_time:
+                time_label = f"{time_label} (첫 ffmpeg 오류 {ffmpeg_time})"
+            lines = [
+                f"• 바코드: `{barcode}` | 병원: `{hospital_name}` | 병실: `{room_name}` | 날짜: `{date_label}` | 시간: `{time_label}`",
+                cause_line,
+                impact_line,
+            ]
+            lines.append(f"• 조치: {' / '.join(action_lines[:3])}")
+            return lines
+
+        def _build_barcode_log_error_summary_session_payload(
+            summary_payload: dict[str, Any],
+            session_entry: dict[str, Any],
+        ) -> dict[str, Any]:
+            request = summary_payload.get("request") if isinstance(summary_payload, dict) else {}
+            detail = session_entry.get("detail") if isinstance(session_entry, dict) else {}
+            if not isinstance(request, dict) or not isinstance(detail, dict):
+                return {}
+
+            error_groups = detail.get("errorGroups") if isinstance(detail.get("errorGroups"), list) else []
+            session_diagnostic = (
+                detail.get("sessionDiagnostic") if isinstance(detail.get("sessionDiagnostic"), dict) else {}
+            )
+            time_range = str(detail.get("startTime") or "시간미상").strip() or "시간미상"
+            stop_time = str(detail.get("stopTime") or "미확인").strip() or "미확인"
+            if stop_time != "미확인":
+                time_range = f"{time_range} ~ {stop_time}"
+
+            payload = {
+                "route": "barcode_log_error_summary_session",
+                "source": summary_payload.get("source"),
+                "request": {
+                    "mode": request.get("mode"),
+                    "barcode": request.get("barcode"),
+                    "date": session_entry.get("date"),
+                },
+                "session": {
+                    "barcode": session_entry.get("barcode"),
+                    "deviceName": session_entry.get("deviceName"),
+                    "hospitalName": session_entry.get("hospitalName"),
+                    "roomName": session_entry.get("roomName"),
+                    "date": session_entry.get("date"),
+                    "time": time_range,
+                    "sessionIndex": detail.get("index"),
+                    "stopToken": detail.get("stopToken"),
+                    "normalClosed": detail.get("normalClosed"),
+                    "restartDetected": detail.get("restartDetected"),
+                    "recordingResult": detail.get("recordingResult"),
+                    "recordingsOnDateCount": session_entry.get("recordingsOnDateCount"),
+                    "errorLineCount": detail.get("errorLineCount"),
+                    "firstFfmpegError": detail.get("firstFfmpegError"),
+                    "errorGroups": [
+                        {
+                            "component": group.get("component"),
+                            "signature": group.get("signature"),
+                            "count": group.get("count"),
+                            "sampleTime": group.get("sampleTime"),
+                            "sampleMessage": group.get("sampleMessage"),
+                        }
+                        for group in error_groups[:6]
+                        if isinstance(group, dict)
+                    ],
+                    "sessionDiagnostic": {
+                        "severity": session_diagnostic.get("severity"),
+                        "finishDelay": session_diagnostic.get("finishDelay"),
+                        "postStopScanCount": session_diagnostic.get("postStopScanCount"),
+                        "postStopStopCount": session_diagnostic.get("postStopStopCount"),
+                        "postStopSnapCount": session_diagnostic.get("postStopSnapCount"),
+                        "postStopDeviceErrorCount": session_diagnostic.get("postStopDeviceErrorCount"),
+                        "displayText": session_diagnostic.get("displayText"),
+                    },
+                },
+            }
+            return payload
+
+        def _build_barcode_log_error_summary_fallback(summary_payload: dict[str, Any]) -> str:
+            summary = summary_payload.get("summary") if isinstance(summary_payload, dict) else None
+            if not isinstance(summary, dict):
+                return ""
+
+            session_entries = _iter_barcode_log_error_summary_sessions(summary_payload)
+            interesting_entries = [entry for entry in session_entries if _is_interesting_barcode_log_error_session(entry)]
+            if not interesting_entries:
+                interesting_entries = session_entries
+            if not interesting_entries:
+                return ""
+
+            lines = ["*세션별 에러 분석*"]
+            for session_entry in interesting_entries:
+                section_lines = _build_barcode_log_error_session_section(session_entry)
+                if not section_lines:
+                    continue
+                lines.append("")
+                lines.extend(section_lines)
+            return "\n".join(lines).strip()
+
+        def _is_bad_barcode_log_error_summary_session(text: str) -> bool:
             normalized = (text or "").strip()
             if not normalized:
                 return True
 
-            required_markers = ("*에러 분석*", "• 핵심 원인:", "• 영향:", "• 권장 조치:")
+            required_markers = ("• 바코드:", "• 핵심 원인:", "• 영향:", "• 조치:")
             if any(marker not in normalized for marker in required_markers):
                 return True
 
@@ -781,27 +823,49 @@ def create_app() -> App:
                 return
 
             error_line_count = int(summary.get("errorLineCount") or 0)
-            if error_line_count <= 0:
+            abnormal_session_count = int(summary.get("abnormalSessionCount") or 0)
+            restart_event_count = int(summary.get("restartEventCount") or 0)
+            if error_line_count <= 0 and abnormal_session_count <= 0 and restart_event_count <= 0:
                 return
 
+            session_entries = _iter_barcode_log_error_summary_sessions(summary_payload)
+            interesting_entries = [entry for entry in session_entries if _is_interesting_barcode_log_error_session(entry)]
+            if not interesting_entries:
+                interesting_entries = session_entries
+            if not interesting_entries:
+                return
+
+            fallback_text = _build_barcode_log_error_summary_fallback(summary_payload)
             provider = (s.LLM_PROVIDER or "").lower().strip()
-            if not s.LLM_SYNTHESIS_ENABLED or provider not in {"claude", "ollama"}:
+            if not s.LLM_SYNTHESIS_ENABLED or not question:
+                reply(fallback_text, mention_user=False)
+                logger.info("Responded with barcode log error summary (direct)")
                 return
-
+            if provider not in {"claude", "ollama"}:
+                reply(fallback_text, mention_user=False)
+                logger.info(
+                    "Responded with barcode log error summary (direct, unsupported provider=%s)",
+                    provider,
+                )
+                return
             if provider == "ollama":
                 health = _check_ollama_health()
                 if not health["ok"]:
+                    reply(fallback_text, mention_user=False)
                     logger.warning(
-                        "Skipped barcode log error summary synthesis because ollama is unavailable=%s",
+                        "Responded with barcode log error summary (direct, ollama unavailable=%s)",
                         health["summary"],
                     )
                     return
             if provider == "claude":
                 if claude_client is None:
+                    reply(fallback_text, mention_user=False)
+                    logger.info("Responded with barcode log error summary (direct, claude client unavailable)")
                     return
                 if not cs.HYUN_USER_ID or user_id != cs.HYUN_USER_ID:
+                    reply(fallback_text, mention_user=False)
                     logger.info(
-                        "Skipped barcode log error summary synthesis because claude is not allowed for user=%s",
+                        "Responded with barcode log error summary (direct, claude synthesis not allowed for user=%s)",
                         user_id,
                     )
                     return
@@ -816,45 +880,52 @@ def create_app() -> App:
                         thread_ts,
                         current_ts,
                     )
-                synthesized_text = _synthesize_retrieval_answer(
-                    question="위 바코드 로그의 에러를 운영 관점에서 분석해줘",
-                    thread_context=thread_context,
-                    evidence_payload=summary_payload,
-                    provider=provider,
-                    claude_client=claude_client,
-                    system_prompt=cs.SYSTEM_PROMPT or None,
-                    max_tokens=s.BARCODE_LOG_ERROR_SUMMARY_MAX_TOKENS,
-                    ollama_timeout_sec=min(90, max(30, s.OLLAMA_TIMEOUT_SEC)),
+                rendered_sections: list[str] = []
+                for session_entry in interesting_entries:
+                    session_payload = _build_barcode_log_error_summary_session_payload(summary_payload, session_entry)
+                    if not session_payload:
+                        continue
+                    fallback_section = "\n".join(_build_barcode_log_error_session_section(session_entry)).strip()
+                    if not fallback_section:
+                        continue
+                    synthesized_text = _synthesize_retrieval_answer(
+                        question=question,
+                        thread_context=thread_context,
+                        evidence_payload=session_payload,
+                        provider=provider,
+                        claude_client=claude_client,
+                        system_prompt=cs.SYSTEM_PROMPT or None,
+                        max_tokens=s.BARCODE_LOG_ERROR_SUMMARY_MAX_TOKENS,
+                    )
+                    final_section = synthesized_text or fallback_section
+                    if _is_bad_barcode_log_error_summary_session(final_section):
+                        final_section = fallback_section
+                    rendered_sections.append(final_section)
+
+                final_text = "*세션별 에러 분석*"
+                if rendered_sections:
+                    final_text = "*세션별 에러 분석*\n\n" + "\n\n".join(rendered_sections)
+                if not rendered_sections:
+                    final_text = fallback_text
+                reply(final_text.strip(), mention_user=False)
+                logger.info(
+                    "Responded with barcode log error summary (%s sections) in thread_ts=%s",
+                    len(rendered_sections),
+                    thread_ts,
                 )
-                final_text = (synthesized_text or "").strip()
-                if _is_bad_barcode_log_error_summary(final_text):
-                    logger.warning("Barcode log error summary synthesis returned empty text")
-                    final_text = _build_barcode_log_error_summary_fallback(summary_payload)
-                if not final_text:
-                    return
-                reply(final_text, mention_user=False)
-                logger.info("Responded with barcode log error summary synthesis in thread_ts=%s", thread_ts)
             except TimeoutError:
-                logger.warning("Barcode log error summary synthesis timed out")
-                fallback_text = _build_barcode_log_error_summary_fallback(summary_payload)
-                if fallback_text:
-                    reply(fallback_text, mention_user=False)
+                logger.warning("Barcode log error summary timeout")
+                reply(fallback_text, mention_user=False)
             except RuntimeError as exc:
                 if _is_timeout_error(exc):
-                    logger.warning("Barcode log error summary synthesis timed out")
-                    fallback_text = _build_barcode_log_error_summary_fallback(summary_payload)
-                    if fallback_text:
-                        reply(fallback_text, mention_user=False)
+                    logger.warning("Barcode log error summary timeout")
+                    reply(fallback_text, mention_user=False)
                     return
                 logger.exception("Barcode log error summary synthesis failed")
-                fallback_text = _build_barcode_log_error_summary_fallback(summary_payload)
-                if fallback_text:
-                    reply(fallback_text, mention_user=False)
+                reply(fallback_text, mention_user=False)
             except Exception:
                 logger.exception("Barcode log error summary synthesis failed")
-                fallback_text = _build_barcode_log_error_summary_fallback(summary_payload)
-                if fallback_text:
-                    reply(fallback_text, mention_user=False)
+                reply(fallback_text, mention_user=False)
 
         try:
             s3_request = _extract_s3_request(question)
