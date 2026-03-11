@@ -413,9 +413,11 @@ def _log_device_download_activity(
     channel_id: str,
     thread_ts: str,
     logger: logging.Logger,
-) -> None:
+) -> int:
     if not records:
-        return
+        return 0
+
+    success_count = 0
 
     for record in records:
         try:
@@ -430,6 +432,7 @@ def _log_device_download_activity(
                     thread_ts=thread_ts,
                 )
             )
+            success_count += 1
         except Exception:
             logger.warning(
                 "Failed to create activity log for device download barcode=%s device=%s",
@@ -437,6 +440,7 @@ def _log_device_download_activity(
                 record.get("deviceName"),
                 exc_info=True,
             )
+    return success_count
 
 
 def _render_device_download_dm_text(
@@ -470,6 +474,7 @@ def _render_device_download_thread_notice(
     log_date: str,
     records: list[dict[str, Any]],
     *,
+    activity_logged: bool = False,
     used_expanded_scope: bool = False,
 ) -> str:
     lines = [
@@ -489,6 +494,9 @@ def _render_device_download_thread_notice(
         for file_name in file_names:
             lines.append(f"  - `{file_name}`")
         lines.append(f"• 다운로드 링크: DM으로 보냈어 (`{len(record.get('downloadLinks') or [])}개`)")
+    if activity_logged:
+        lines.append("")
+        lines.append("• 다운로드 내역: 저장되었습니다")
     return "\n".join(lines)
 
 
@@ -1540,16 +1548,7 @@ def create_app() -> App:
                             download_records,
                         )
                         if _send_dm_message(user_id, dm_text):
-                            thread_notice = _render_device_download_thread_notice(
-                                barcode or "",
-                                log_date,
-                                download_records,
-                                used_expanded_scope=bool(
-                                    ((probe_payload.get("request") or {}).get("usedExpandedScope"))
-                                ),
-                            )
-                            reply(thread_notice)
-                            _log_device_download_activity(
+                            logged_count = _log_device_download_activity(
                                 records=download_records,
                                 barcode=barcode or "",
                                 log_date=log_date,
@@ -1559,6 +1558,16 @@ def create_app() -> App:
                                 thread_ts=thread_ts,
                                 logger=logger,
                             )
+                            thread_notice = _render_device_download_thread_notice(
+                                barcode or "",
+                                log_date,
+                                download_records,
+                                activity_logged=logged_count > 0,
+                                used_expanded_scope=bool(
+                                    ((probe_payload.get("request") or {}).get("usedExpandedScope"))
+                                ),
+                            )
+                            reply(thread_notice)
                         else:
                             failure_notice = _render_device_download_dm_failure_notice(
                                 barcode or "",
