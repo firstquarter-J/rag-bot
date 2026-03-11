@@ -106,8 +106,10 @@ from boxer.routers.common.s3 import _build_s3_client
 
 _NOTION_DOC_QUERY_TOKENS = (
     "마미박스",
+    "mommybox",
     "박스",
     "베이비매직",
+    "babymagic",
     "299버전",
     "299",
     "캡처보드",
@@ -118,6 +120,37 @@ _NOTION_DOC_QUERY_TOKENS = (
     "스피커",
     "메모리",
     "패치",
+)
+_NOTION_DOC_EXFILTRATION_PATTERNS = (
+    re.compile(
+        r"(시스템\s*(정보|프롬프트|지시문)|system\s*prompt|developer\s*prompt|internal\s*prompt|hidden\s*prompt|instruction\s*prompt)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(문서\s*(원문|전문|본문)|원문|전문|본문|raw\s*text|full\s*text|complete\s*text|entire\s*text|whole\s*text|verbatim|dump|텍스트\s*전체|전체\s*텍스트)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(하나하나\s*(오픈|열)|하나씩\s*(오픈|열)|전부\s*보여|모두\s*보여|통째로\s*보여|텍스트로\s*보여|그대로\s*보여|show\s+me|open\s+each|open\s+every|one\s+by\s+one|full\s+text|all\s+text)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"((i\s*am|i'?m|im)\s+(super\s+admin|admin|owner|developer|maintainer)|super\s+admin|admin\s+mode|override|ignore\s+(previous|all)\s+(rules|instructions)|bypass)",
+        re.IGNORECASE,
+    ),
+)
+_NOTION_DOC_LEAK_MARKERS = (
+    "system prompt",
+    "developer prompt",
+    "internal prompt",
+    "thread context",
+    "evidence(json)",
+    "page_id=",
+    "authorization:",
+    "bearer ",
+    "notion_token",
+    "<think>",
+    "</think>",
 )
 
 
@@ -191,6 +224,60 @@ def _looks_like_notion_doc_question(question: str) -> bool:
     if not text:
         return False
     return any(token in text for token in _NOTION_DOC_QUERY_TOKENS)
+
+
+def _is_notion_doc_exfiltration_attempt(question: str) -> bool:
+    text = (question or "").strip()
+    if not _looks_like_notion_doc_question(text):
+        return False
+    return any(pattern.search(text) for pattern in _NOTION_DOC_EXFILTRATION_PATTERNS)
+
+
+def _build_notion_doc_security_refusal() -> str:
+    return "보안 위반 시도로 판단해 요청을 즉시 차단해. 문서 원문, 시스템 정보, 내부 지시문은 공개하지 않아. 같은 시도가 반복되면 관리자 검토 및 접근 제한 대상으로 처리해."
+
+
+def _sanitize_notion_references_for_llm(references: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    items = [item for item in (references or []) if isinstance(item, dict)]
+    sanitized: list[dict[str, Any]] = []
+    for item in items[:3]:
+        preview_lines = [
+            str(line).strip()[:160]
+            for line in (item.get("previewLines") or [])
+            if str(line).strip()
+        ][:5]
+        sanitized.append(
+            {
+                "title": str(item.get("title") or "").strip(),
+                "section": str(item.get("section") or "").strip(),
+                "kind": str(item.get("kind") or "").strip(),
+                "priority": str(item.get("priority") or "").strip(),
+                "matchedKeywords": [
+                    str(keyword).strip()
+                    for keyword in (item.get("matchedKeywords") or [])
+                    if str(keyword).strip()
+                ][:4],
+                "previewLines": preview_lines,
+                "summary": " / ".join(preview_lines[:3]),
+            }
+        )
+    return sanitized
+
+
+def _needs_notion_doc_security_refusal(text: str, route_name: str) -> bool:
+    if route_name != "notion playbook qa":
+        return False
+    normalized = (text or "").strip().lower()
+    if any(marker in normalized for marker in _NOTION_DOC_LEAK_MARKERS):
+        return True
+    meaningful_lines = [line for line in (text or "").splitlines() if line.strip()]
+    if "```" in (text or ""):
+        return True
+    if len(meaningful_lines) > 16:
+        return True
+    if len(text or "") > 1400:
+        return True
+    return False
 
 
 def _build_notion_doc_fallback(question: str, references: list[dict[str, Any]] | None) -> str:
@@ -843,7 +930,7 @@ def create_app() -> App:
 
             try:
                 thread_context = ""
-                if s.LLM_SYNTHESIS_INCLUDE_THREAD_CONTEXT:
+                if s.LLM_SYNTHESIS_INCLUDE_THREAD_CONTEXT and evidence_route != "notion_playbook_qa":
                     thread_context = _load_thread_context(
                         client,
                         logger,
@@ -869,7 +956,10 @@ def create_app() -> App:
                     final_text = fallback_with_playbooks
                 if _needs_recording_failure_analysis_fallback(final_text, fallback_text, route_name):
                     final_text = fallback_with_playbooks
-                final_text = _append_notion_playbook_section(final_text, notion_playbooks)
+                if _needs_notion_doc_security_refusal(final_text, route_name):
+                    final_text = _build_notion_doc_security_refusal()
+                else:
+                    final_text = _append_notion_playbook_section(final_text, notion_playbooks)
                 reply(final_text)
                 logger.info(
                     "Responded with %s (%s) in thread_ts=%s",
@@ -2510,6 +2600,14 @@ def create_app() -> App:
 
         if _looks_like_notion_doc_question(question):
             try:
+                if _is_notion_doc_exfiltration_attempt(question):
+                    logger.warning(
+                        "Blocked notion doc exfiltration attempt in thread_ts=%s question=%s",
+                        thread_ts,
+                        question,
+                    )
+                    reply(_build_notion_doc_security_refusal())
+                    return
                 if not _is_notion_configured():
                     logger.warning("Notion doc query skipped because notion is not configured in runtime")
                     reply("관련 문서를 찾지 못했어. 증상이나 키워드를 조금 더 구체적으로 말해줘")
@@ -2527,9 +2625,10 @@ def create_app() -> App:
                     max_results=3,
                 )
                 if notion_references:
-                    evidence_payload["notionPlaybooks"] = notion_references
-                    evidence_payload["notionReferences"] = notion_references
-                    fallback_text = _build_notion_doc_fallback(question, notion_references)
+                    sanitized_references = _sanitize_notion_references_for_llm(notion_references)
+                    evidence_payload["notionPlaybooks"] = sanitized_references
+                    evidence_payload["notionReferences"] = sanitized_references
+                    fallback_text = _build_notion_doc_fallback(question, sanitized_references)
                     _reply_with_retrieval_synthesis(
                         fallback_text,
                         evidence_payload,
