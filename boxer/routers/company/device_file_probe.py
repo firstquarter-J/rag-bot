@@ -254,7 +254,7 @@ def _build_device_file_recovery_config_message() -> str:
 def _display_device_probe_reason(reason: str | None) -> str:
     normalized = str(reason or "").strip().lower()
     if normalized in {"agent_ssh_not_ready", "novalidconnectionserror", "timeout", "oerror"}:
-        return "장비 SSH 연결 준비 실패 (장비 오프라인 또는 네트워크 불안정 가능)"
+        return "장비 SSH 연결 준비 실패. SSH 연결 상태 먼저 확인하고, 필요하면 장비 재부팅 또는 네트워크 점검이 필요해"
     if normalized == "ssh_auth_failed":
         return "장비 SSH 인증 실패"
     if normalized == "file_id_missing":

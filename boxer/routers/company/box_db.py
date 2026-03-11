@@ -1,14 +1,20 @@
 import os
+import socket
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import pymysql
+try:
+    import paramiko
+except ImportError:  # pragma: no cover - runtime guard
+    paramiko = None
 
 from boxer.company import settings as cs
 from boxer.core import settings as s
 from boxer.core.utils import _display_value, _format_datetime, _truncate_text
 from boxer.routers.common.db import _create_db_connection
+from boxer.routers.company.mda_graphql import _is_mda_graphql_configured, _wait_for_mda_device_agent_ssh
 
 
 def _local_zone() -> ZoneInfo:
@@ -76,6 +82,100 @@ def _format_recorded_at_local(value: object) -> str:
         localized = value.astimezone(local_tz)
         return localized.strftime("%Y-%m-%d %H:%M:%S")
     return _format_datetime(value)
+
+
+def _format_active_flag_label(value: object) -> str:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return _display_value(value, default="미확인")
+    return "활성" if normalized == 1 else "비활성" if normalized == 0 else str(normalized)
+
+
+def _format_install_flag_label(value: object) -> str:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return _display_value(value, default="미확인")
+    return "설치" if normalized == 1 else "미설치" if normalized == 0 else str(normalized)
+
+
+def _lookup_device_ssh_status(device_name: str) -> str:
+    normalized_name = str(device_name or "").strip()
+    if not normalized_name or not _is_mda_graphql_configured() or not cs.DEVICE_SSH_PASSWORD or paramiko is None:
+        return "미확인"
+
+    try:
+        wait_result = _wait_for_mda_device_agent_ssh(
+            normalized_name,
+            poll_timeout_sec=min(10, max(1, cs.MDA_SSH_POLL_TIMEOUT_SEC)),
+        )
+    except Exception:
+        return "미확인"
+
+    if not isinstance(wait_result, dict) or not wait_result.get("ready"):
+        return "연결 불가"
+
+    device_info = wait_result.get("device") if isinstance(wait_result.get("device"), dict) else {}
+    agent_ssh = device_info.get("agentSsh") if isinstance(device_info, dict) else None
+    host = str((agent_ssh or {}).get("host") or "").strip()
+    port = (agent_ssh or {}).get("port")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = 0
+    if not host or port <= 0:
+        return "연결 불가"
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            hostname=host,
+            port=port,
+            username=cs.DEVICE_SSH_USER,
+            password=cs.DEVICE_SSH_PASSWORD,
+            timeout=max(1, cs.DEVICE_SSH_CONNECT_TIMEOUT_SEC),
+            banner_timeout=max(1, cs.DEVICE_SSH_CONNECT_TIMEOUT_SEC),
+            auth_timeout=max(1, cs.DEVICE_SSH_CONNECT_TIMEOUT_SEC),
+            look_for_keys=False,
+            allow_agent=False,
+        )
+    except (
+        paramiko.AuthenticationException,
+        paramiko.SSHException,
+        paramiko.ssh_exception.NoValidConnectionsError,
+        socket.timeout,
+        TimeoutError,
+        OSError,
+    ):
+        return "연결 불가"
+    finally:
+        client.close()
+    return "연결 가능"
+
+
+def _build_device_detail_lines(
+    row: dict[str, Any],
+    *,
+    line_prefix: str,
+    ssh_status: str | None = None,
+) -> list[str]:
+    lines = [
+        f"{line_prefix}장비 번호: `{_display_value(row.get('seq'), default='미확인')}`",
+        f"{line_prefix}장비명: `{_display_value(row.get('deviceName'), default='미확인')}`",
+        f"{line_prefix}병원: `{_display_value(row.get('hospitalName'), default='미확인')}`",
+        f"{line_prefix}병실: `{_display_value(row.get('roomName'), default='미확인')}`",
+        f"{line_prefix}status: `{_display_value(row.get('status'), default='미확인')}`",
+        f"{line_prefix}활성 유무: `{_format_active_flag_label(row.get('activeFlag'))}`",
+        f"{line_prefix}설치 유무: `{_format_install_flag_label(row.get('installFlag'))}`",
+    ]
+    if ssh_status is not None:
+        lines.insert(5, f"{line_prefix}SSH 연결 상태: `{_display_value(ssh_status, default='미확인')}`")
+    description = _display_value(row.get("description"), default="")
+    if description:
+        lines.append(f"{line_prefix}description: `{description}`")
+    return lines
 
 
 def _format_video_length(value: object) -> str:
@@ -1414,9 +1514,6 @@ def _query_devices_by_filters(
                     "d.status, "
                     "d.activeFlag, "
                     "d.installFlag, "
-                    "d.ep_online, "
-                    "d.ep_version, "
-                    "d.ep_videoDev, "
                     "h.hospitalName AS hospitalName, "
                     "hr.roomName AS roomName "
                     "FROM devices d "
@@ -1432,54 +1529,45 @@ def _query_devices_by_filters(
         connection.close()
 
     lines = ["*장비 조회 결과*"]
+    summary_lines: list[str] = []
     if normalized_device_name:
-        lines.append(f"• 장비명: `{normalized_device_name}`")
+        summary_lines.append(f"• 장비명: `{normalized_device_name}`")
     if device_seq is not None:
-        lines.append(f"• deviceSeq: `{device_seq}`")
+        summary_lines.append(f"• 장비 번호: `{device_seq}`")
     if normalized_hospital_name:
-        lines.append(f"• 병원: `{normalized_hospital_name}`")
+        summary_lines.append(f"• 병원: `{normalized_hospital_name}`")
     if normalized_room_name:
-        lines.append(f"• 병실: `{normalized_room_name}`")
+        summary_lines.append(f"• 병실: `{normalized_room_name}`")
     if hospital_seq is not None:
-        lines.append(f"• hospitalSeq: `{hospital_seq}`")
+        summary_lines.append(f"• hospitalSeq: `{hospital_seq}`")
     if hospital_room_seq is not None:
-        lines.append(f"• hospitalRoomSeq: `{hospital_room_seq}`")
+        summary_lines.append(f"• hospitalRoomSeq: `{hospital_room_seq}`")
     if normalized_status:
-        lines.append(f"• status: `{normalized_status}`")
+        summary_lines.append(f"• status: `{normalized_status}`")
     if active_flag is not None:
-        lines.append(f"• activeFlag: `{active_flag}`")
+        summary_lines.append(f"• 활성 유무: `{_format_active_flag_label(active_flag)}`")
     if install_flag is not None:
-        lines.append(f"• installFlag: `{install_flag}`")
-    lines.append(f"• devices row 수: *{total_count}개*")
+        summary_lines.append(f"• 설치 유무: `{_format_install_flag_label(install_flag)}`")
+    summary_lines.append(f"• devices row 수: *{total_count}개*")
 
     if count_only:
-        return "\n".join(lines)
+        return "\n".join([*lines, *summary_lines])
 
     if total_count <= 0:
+        lines.extend(summary_lines)
         lines.append("• 결과: 조건에 맞는 장비 기록이 없어")
         return "\n".join(lines)
 
+    if total_count == 1 and rows:
+        ssh_status = _lookup_device_ssh_status(_display_value(rows[0].get("deviceName"), default=""))
+        lines.extend(_build_device_detail_lines(rows[0], line_prefix="• ", ssh_status=ssh_status))
+        return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
+
+    lines.extend(summary_lines)
     lines.append("• 장비 목록(최신 seq순):")
     for index, row in enumerate(rows, start=1):
-        ep_online = row.get("ep_online")
-        ep_online_label = _format_recorded_at_local(ep_online) if ep_online else "미확인"
-        lines.extend(
-            [
-                f"- {index}.",
-                f"  deviceSeq: `{_display_value(row.get('seq'), default='미확인')}`",
-                f"  장비명: `{_display_value(row.get('deviceName'), default='미확인')}`",
-                f"  병원: `{_display_value(row.get('hospitalName'), default='미확인')}`",
-                f"  병실: `{_display_value(row.get('roomName'), default='미확인')}`",
-                f"  status: `{_display_value(row.get('status'), default='미확인')}`",
-                f"  상태: `activeFlag={_display_value(row.get('activeFlag'), default='미확인')} | installFlag={_display_value(row.get('installFlag'), default='미확인')}`",
-                f"  ep_online(KST): `{ep_online_label}`",
-                f"  ep_version: `{_display_value(row.get('ep_version'), default='미확인')}`",
-                f"  ep_videoDev: `{_display_value(row.get('ep_videoDev'), default='미확인')}`",
-            ]
-        )
-        description = _display_value(row.get("description"), default="")
-        if description:
-            lines.append(f"  description: `{description}`")
+        lines.append(f"- {index}.")
+        lines.extend(_build_device_detail_lines(row, line_prefix="  "))
         lines.append("")
 
     if lines and lines[-1] == "":
