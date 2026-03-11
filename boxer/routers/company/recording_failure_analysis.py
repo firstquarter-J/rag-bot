@@ -183,10 +183,89 @@ def _normalize_signature(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
-def _get_top_error_group(record: dict[str, Any]) -> dict[str, Any]:
+def _iter_error_groups(record: dict[str, Any]) -> list[dict[str, Any]]:
     groups = record.get("errorGroups") if isinstance(record.get("errorGroups"), list) else []
-    first_group = groups[0] if groups and isinstance(groups[0], dict) else {}
-    return first_group if isinstance(first_group, dict) else {}
+    return [group for group in groups if isinstance(group, dict)]
+
+
+def _is_ffmpeg_related_group(group: dict[str, Any]) -> bool:
+    component = _normalize_component(group.get("component"))
+    signature = _normalize_signature(group.get("signature"))
+    combined = " ".join(part for part in (component, signature) if part)
+    if "ffmpeg" in combined:
+        return True
+    if component in {"recorder", "recordingmonitor", "mediaprocessor"}:
+        return any(
+            token in combined
+            for token in (
+                "startrecording",
+                "start recording",
+                "generatethumbnail",
+                "recording ffmpeg",
+                "spawned recording",
+                "killed with signal",
+                "sigterm",
+            )
+        )
+    return False
+
+
+def _is_ffmpeg_sigterm_group(group: dict[str, Any]) -> bool:
+    component = _normalize_component(group.get("component"))
+    signature = _normalize_signature(group.get("signature"))
+    combined = " ".join(part for part in (component, signature) if part)
+    if not _is_ffmpeg_related_group(group) and component not in {"recorder", "ffmpeg"}:
+        return False
+    return any(token in combined for token in ("signal sigterm", "killed with signal", "sigterm"))
+
+
+def _is_ffmpeg_timestamp_group(group: dict[str, Any]) -> bool:
+    signature = _normalize_signature(group.get("signature"))
+    tokens = ("invalid dropping", "non-monotonous dts", "dts ", "pts ", "timestamp")
+    return any(token in signature for token in tokens)
+
+
+def _is_recording_stall_group(group: dict[str, Any]) -> bool:
+    signature = _normalize_signature(group.get("signature"))
+    tokens = ("recording may be stalled", "recording critically stalled", "stalled")
+    return any(token in signature for token in tokens)
+
+
+def _is_device_busy_group(group: dict[str, Any]) -> bool:
+    signature = _normalize_signature(group.get("signature"))
+    tokens = ("device or resource busy", "/dev/video0", "no such file or directory", "videodevice : error")
+    return any(token in signature for token in tokens)
+
+
+def _score_error_group_priority(group: dict[str, Any]) -> int:
+    if _is_ffmpeg_sigterm_group(group):
+        return 600
+    if _is_recording_stall_group(group):
+        return 560
+    if _is_ffmpeg_timestamp_group(group):
+        return 540
+    if _is_device_busy_group(group):
+        return 520
+    if _is_ffmpeg_related_group(group):
+        return 500
+    if _is_network_side_effect_group(group):
+        return 300
+    return 100
+
+
+def _get_top_error_group(record: dict[str, Any]) -> dict[str, Any]:
+    groups = _iter_error_groups(record)
+    if not groups:
+        return {}
+    return max(
+        groups,
+        key=lambda group: (
+            _score_error_group_priority(group),
+            int(group.get("count") or 0),
+            -len(_normalize_component(group.get("component"))),
+            -len(_normalize_signature(group.get("signature"))),
+        ),
+    )
 
 
 def _is_network_side_effect_group(group: dict[str, Any]) -> bool:
@@ -198,18 +277,14 @@ def _is_network_side_effect_group(group: dict[str, Any]) -> bool:
 
 
 def _record_has_all_network_side_effect_errors(record: dict[str, Any]) -> bool:
-    groups = record.get("errorGroups") if isinstance(record.get("errorGroups"), list) else []
-    valid_groups = [group for group in groups if isinstance(group, dict)]
-    if not valid_groups:
+    groups = _iter_error_groups(record)
+    if not groups:
         return False
-    return all(_is_network_side_effect_group(group) for group in valid_groups)
+    return all(_is_network_side_effect_group(group) for group in groups)
 
 
 def _record_has_uploader_network_error(record: dict[str, Any]) -> bool:
-    groups = record.get("errorGroups") if isinstance(record.get("errorGroups"), list) else []
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
+    for group in _iter_error_groups(record):
         if _normalize_component(group.get("component")) != "uploader":
             continue
         if any(token in _normalize_signature(group.get("signature")) for token in _NETWORK_ERROR_HINTS):
@@ -217,17 +292,23 @@ def _record_has_uploader_network_error(record: dict[str, Any]) -> bool:
     return False
 
 
+def _record_has_ffmpeg_sigterm_error(record: dict[str, Any]) -> bool:
+    first_ffmpeg = record.get("firstFfmpegError")
+    candidates: list[str] = []
+    if isinstance(first_ffmpeg, dict):
+        candidates.append(_normalize_signature(first_ffmpeg.get("message")))
+        candidates.append(_normalize_signature(first_ffmpeg.get("raw")))
+    if any(token in candidate for candidate in candidates for token in ("signal sigterm", "killed with signal", "sigterm")):
+        return True
+    return any(_is_ffmpeg_sigterm_group(group) for group in _iter_error_groups(record))
+
+
 def _record_has_ffmpeg_error(record: dict[str, Any]) -> bool:
     first_ffmpeg = record.get("firstFfmpegError")
     if isinstance(first_ffmpeg, dict) and first_ffmpeg:
         return True
-    groups = record.get("errorGroups") if isinstance(record.get("errorGroups"), list) else []
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        component = _normalize_component(group.get("component"))
-        signature = _normalize_signature(group.get("signature"))
-        if "ffmpeg" in component or "ffmpeg" in signature:
+    for group in _iter_error_groups(record):
+        if _is_ffmpeg_related_group(group):
             return True
     return False
 
@@ -238,10 +319,7 @@ def _record_has_ffmpeg_timestamp_error(record: dict[str, Any]) -> bool:
     if isinstance(first_ffmpeg, dict):
         candidates.append(_normalize_signature(first_ffmpeg.get("message")))
         candidates.append(_normalize_signature(first_ffmpeg.get("raw")))
-    groups = record.get("errorGroups") if isinstance(record.get("errorGroups"), list) else []
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
+    for group in _iter_error_groups(record):
         candidates.append(_normalize_signature(group.get("signature")))
 
     tokens = ("invalid dropping", "non-monotonous dts", "dts ", "pts ", "timestamp")
@@ -249,24 +327,12 @@ def _record_has_ffmpeg_timestamp_error(record: dict[str, Any]) -> bool:
 
 
 def _record_has_recording_stall_error(record: dict[str, Any]) -> bool:
-    candidates: list[str] = []
-    groups = record.get("errorGroups") if isinstance(record.get("errorGroups"), list) else []
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        candidates.append(_normalize_signature(group.get("signature")))
-    tokens = ("recording may be stalled", "recording critically stalled", "stalled")
-    return any(any(token in candidate for token in tokens) for candidate in candidates)
+    return any(_is_recording_stall_group(group) for group in _iter_error_groups(record))
 
 
 def _record_has_device_busy_error(record: dict[str, Any]) -> bool:
-    groups = record.get("errorGroups") if isinstance(record.get("errorGroups"), list) else []
-    tokens = ("device or resource busy", "/dev/video0", "no such file or directory", "videodevice : error")
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        signature = _normalize_signature(group.get("signature"))
-        if any(token in signature for token in tokens):
+    for group in _iter_error_groups(record):
+        if _is_device_busy_group(group):
             return True
     return False
 
@@ -300,6 +366,8 @@ def _classify_record(record: dict[str, Any]) -> list[str]:
         if _record_has_uploader_network_error(record):
             tags.add("upload_network_error")
 
+    if _record_has_ffmpeg_sigterm_error(record):
+        tags.add("ffmpeg_sigterm")
     if _record_has_ffmpeg_error(record):
         tags.add("ffmpeg_error")
     if _record_has_ffmpeg_timestamp_error(record):
@@ -682,6 +750,7 @@ def _build_cause_line(record: dict[str, Any]) -> str:
     top_count = int(top_group.get("count") or 0)
     recordings_on_date_count = int(record.get("recordingsOnDateCount") or 0)
     has_stall = "recording_stalled" in tags
+    has_ffmpeg_sigterm = "ffmpeg_sigterm" in tags
 
     if "restart_detected" in tags:
         return "세션 중 장비 재시작이 확인돼 정상 녹화 실패로 판단해"
@@ -690,6 +759,8 @@ def _build_cause_line(record: dict[str, Any]) -> str:
             return "녹화 중 파일 증가율 저하(stall)와 ffmpeg 종료가 함께 확인됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
         if has_stall:
             return "녹화 중 파일 증가율 저하(stall)가 반복됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
+        if has_ffmpeg_sigterm:
+            return "ffmpeg가 SIGTERM으로 종료됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
         return "ffmpeg 오류가 확인됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
     if "finish_anomaly" in tags:
         return "초기 ffmpeg 오류보다 종료 처리 지연과 종료 후 장치 오류가 더 뚜렷해서 실제 영상 손상 가능성이 높아"
@@ -699,6 +770,8 @@ def _build_cause_line(record: dict[str, Any]) -> str:
         return "업로드/상태 전송 통신 오류가 반복됐고 날짜 기준 DB 영상 기록이 없어 업로드 실패 가능성을 의심해야 해"
     if "ffmpeg_timestamp_error" in tags:
         return "ffmpeg DTS/타임스탬프 이상이 확인돼 캡처보드 연결 불량 또는 캡처보드 고장을 우선 의심해"
+    if has_ffmpeg_sigterm:
+        return "ffmpeg가 SIGTERM으로 종료돼 녹화 흐름이 끊겼고 캡처보드/영상 입력 계열을 우선 점검해야 해"
     if "ffmpeg_error" in tags:
         return "ffmpeg 오류가 확인돼 영상 손상 가능성을 의심해야 하고 캡처보드 이상을 우선 점검해야 해"
     if "stop_missing" in tags:

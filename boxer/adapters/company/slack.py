@@ -23,6 +23,10 @@ from boxer.routers.company.barcode_log import (
     _analyze_barcode_log_scan_events,
     _build_phase2_scope_request_message,
     _extract_capture_seq_filters,
+    _extract_device_flag_filters,
+    _extract_device_name_scope,
+    _extract_device_seq_filter,
+    _extract_device_status_filter,
     _extract_hospital_room_scope,
     _extract_leading_hospital_scope,
     _extract_log_date,
@@ -37,6 +41,7 @@ from boxer.routers.company.barcode_log import (
     _is_barcode_video_recorded_on_date_request,
     _is_barcode_video_count_request,
     _is_error_focused_request,
+    _is_devices_filter_query_request,
     _is_hospitals_filter_query_request,
     _is_hospital_rooms_filter_query_request,
     _is_recordings_filter_query_request,
@@ -62,7 +67,10 @@ from boxer.routers.company.device_file_probe import (
     _should_render_compact_device_recovery_result,
 )
 from boxer.routers.company.recording_failure_analysis import (
+    _build_cause_line,
     _build_recording_failure_analysis_evidence,
+    _classify_record,
+    _get_top_error_group,
     _has_recording_failure_analysis_hints,
     _is_recording_failure_analysis_request,
     _narrow_recording_failure_analysis_evidence,
@@ -71,6 +79,7 @@ from boxer.routers.company.recording_failure_analysis import (
 from boxer.routers.company.box_db import (
     _load_recordings_context_by_barcode,
     _lookup_device_contexts_by_hospital_room,
+    _query_devices_by_filters,
     _query_all_recorded_dates_by_barcode,
     _query_hospitals_by_filters,
     _query_hospital_rooms_by_filters,
@@ -713,77 +722,88 @@ def create_app() -> App:
                 or (recording_result not in {"", "정상 녹화로 판단"})
             )
 
+        def _build_barcode_log_error_session_record(session_entry: dict[str, Any]) -> dict[str, Any]:
+            detail = session_entry.get("detail") if isinstance(session_entry, dict) else {}
+            if not isinstance(detail, dict):
+                return {}
+
+            normal_closed = bool(detail.get("normalClosed"))
+            session_diagnostic = (
+                detail.get("sessionDiagnostic") if isinstance(detail.get("sessionDiagnostic"), dict) else {}
+            )
+            record = {
+                "deviceName": session_entry.get("deviceName"),
+                "hospitalName": session_entry.get("hospitalName"),
+                "roomName": session_entry.get("roomName"),
+                "date": session_entry.get("date"),
+                "recordingsOnDateCount": int(session_entry.get("recordingsOnDateCount") or 0),
+                "sessions": {
+                    "sessionCount": 1,
+                    "normalCount": 1 if normal_closed else 0,
+                    "abnormalCount": 0 if normal_closed else 1,
+                },
+                "restartDetected": bool(detail.get("restartDetected")),
+                "errorLineCount": int(detail.get("errorLineCount") or 0),
+                "errorGroups": [
+                    group
+                    for group in (detail.get("errorGroups") or [])
+                    if isinstance(group, dict)
+                ],
+                "firstFfmpegError": (
+                    detail.get("firstFfmpegError") if isinstance(detail.get("firstFfmpegError"), dict) else {}
+                ),
+                "sessionDiagnostics": [session_diagnostic] if session_diagnostic else [],
+            }
+            record["classificationTags"] = _classify_record(record)
+            return record
+
         def _build_barcode_log_error_session_section(session_entry: dict[str, Any]) -> list[str]:
             detail = session_entry.get("detail") if isinstance(session_entry, dict) else {}
             if not isinstance(detail, dict):
                 return []
 
             barcode = str(session_entry.get("barcode") or "미확인").strip() or "미확인"
-            device_name = str(session_entry.get("deviceName") or "미확인").strip() or "미확인"
             hospital_name = str(session_entry.get("hospitalName") or "미확인").strip() or "미확인"
             room_name = str(session_entry.get("roomName") or "미확인").strip() or "미확인"
             date_label = str(session_entry.get("date") or "미확인").strip() or "미확인"
             recordings_on_date_count = int(session_entry.get("recordingsOnDateCount") or 0)
-            session_index = int(detail.get("index") or 0)
             start_time = str(detail.get("startTime") or "시간미상").strip() or "시간미상"
             stop_time = str(detail.get("stopTime") or "미확인").strip() or "미확인"
             stop_token = str(detail.get("stopToken") or "미확인").strip() or "미확인"
             normal_closed = bool(detail.get("normalClosed"))
             restart_detected = bool(detail.get("restartDetected"))
             recording_result = str(detail.get("recordingResult") or "추가 확인 필요").strip() or "추가 확인 필요"
-            error_line_count = int(detail.get("errorLineCount") or 0)
-            error_groups = detail.get("errorGroups") if isinstance(detail.get("errorGroups"), list) else []
-            top_group = error_groups[0] if error_groups and isinstance(error_groups[0], dict) else {}
+            session_record = _build_barcode_log_error_session_record(session_entry)
+            tags = set(session_record.get("classificationTags") or [])
+            error_line_count = int(session_record.get("errorLineCount") or 0)
+            error_groups = session_record.get("errorGroups") if isinstance(session_record.get("errorGroups"), list) else []
+            top_group = _get_top_error_group(session_record)
             top_component = str(top_group.get("component") or "미확인").strip() or "미확인"
             top_signature = str(top_group.get("signature") or "미확인").strip() or "미확인"
             top_count = int(top_group.get("count") or 0)
-            first_ffmpeg_error = detail.get("firstFfmpegError") if isinstance(detail.get("firstFfmpegError"), dict) else {}
+            first_ffmpeg_error = (
+                session_record.get("firstFfmpegError")
+                if isinstance(session_record.get("firstFfmpegError"), dict)
+                else {}
+            )
             ffmpeg_time = str(first_ffmpeg_error.get("timeLabel") or "").strip()
-            ffmpeg_elapsed = str(first_ffmpeg_error.get("elapsedFromSessionStart") or "").strip()
             session_diagnostic = detail.get("sessionDiagnostic") if isinstance(detail.get("sessionDiagnostic"), dict) else {}
             diagnostic_severity = str(session_diagnostic.get("severity") or "").strip()
-            diagnostic_text = str(session_diagnostic.get("displayText") or "").strip()
-            finish_delay = str(session_diagnostic.get("finishDelay") or "").strip()
-            post_stop_device_error_count = int(session_diagnostic.get("postStopDeviceErrorCount") or 0)
 
-            top_signature_lower = top_signature.lower()
-            top_component_lower = top_component.lower()
-            is_ffmpeg_error = "ffmpeg" in top_signature_lower or "ffmpeg" in top_component_lower
-            is_standby_ffmpeg_error = "standby error" in top_signature_lower
-            is_ffmpeg_timestamp_error = any(
-                token in top_signature_lower
-                for token in ("invalid dropping", "non-monotonous dts", "dts ", "pts ", "timestamp")
+            first_ffmpeg_text = " ".join(
+                str(first_ffmpeg_error.get(key) or "").strip().lower()
+                for key in ("message", "raw")
             )
-            is_recording_stalled = any(
-                isinstance(group, dict)
-                and any(
-                    token in str(group.get("signature") or "").strip().lower()
-                    for token in ("recording may be stalled", "recording critically stalled", "stalled")
-                )
-                for group in error_groups
-            )
-            all_network_side_effect_errors = bool(error_groups) and all(
-                (
-                    str(group.get("component") or "").strip().lower() in {"endpoint", "endpointclient", "uploader"}
-                    and any(
-                        token in str(group.get("signature") or "").strip().lower()
-                        for token in (
-                            "couldn't renew jwt",
-                            "send status: failed",
-                            "sendcurrentframesnapbase64",
-                            "sendscreenshotbase64",
-                            "senddailylog",
-                            "getaddrinfo eai_again",
-                            "status.kr.mmtalkbox.com",
-                            "stream.kr.mmtalkbox.com",
-                            "couldn't be sent",
-                            "throttling:",
-                        )
-                    )
-                )
+            is_ffmpeg_error = "ffmpeg_error" in tags
+            is_standby_ffmpeg_error = "standby error" in first_ffmpeg_text or any(
+                "standby error" in str(group.get("signature") or "").strip().lower()
                 for group in error_groups
                 if isinstance(group, dict)
             )
+            is_ffmpeg_timestamp_error = "ffmpeg_timestamp_error" in tags
+            is_recording_stalled = "recording_stalled" in tags
+            all_network_side_effect_errors = "status_network_error" in tags
+            router_cause_hint = _build_cause_line(session_record)
 
             if restart_detected:
                 cause_line = "• 핵심 원인: 세션 중 장비 재시작이 확인돼 정상 녹화 실패로 판단해"
@@ -797,7 +817,7 @@ def create_app() -> App:
                 elif is_recording_stalled:
                     cause_line = "• 핵심 원인: 녹화 중 파일 증가율 저하(stall)가 반복됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
                 else:
-                    cause_line = "• 핵심 원인: ffmpeg 오류가 확인됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
+                    cause_line = f"• 핵심 원인: {router_cause_hint}"
                 impact_line = f"• 영향: 날짜 기준 DB 영상 기록이 `{recordings_on_date_count}개`라 녹화 파일 저장/업로드가 실패한 상태야"
             elif all_network_side_effect_errors and normal_closed and diagnostic_severity != "high":
                 if recordings_on_date_count > 0:
@@ -857,10 +877,12 @@ def create_app() -> App:
             if not isinstance(request, dict) or not isinstance(detail, dict):
                 return {}
 
-            error_groups = detail.get("errorGroups") if isinstance(detail.get("errorGroups"), list) else []
+            session_record = _build_barcode_log_error_session_record(session_entry)
+            error_groups = session_record.get("errorGroups") if isinstance(session_record.get("errorGroups"), list) else []
             session_diagnostic = (
                 detail.get("sessionDiagnostic") if isinstance(detail.get("sessionDiagnostic"), dict) else {}
             )
+            representative_error_group = _get_top_error_group(session_record)
             time_range = str(detail.get("startTime") or "시간미상").strip() or "시간미상"
             stop_time = str(detail.get("stopTime") or "미확인").strip() or "미확인"
             if stop_time != "미확인":
@@ -889,6 +911,15 @@ def create_app() -> App:
                     "recordingsOnDateCount": session_entry.get("recordingsOnDateCount"),
                     "errorLineCount": detail.get("errorLineCount"),
                     "firstFfmpegError": detail.get("firstFfmpegError"),
+                    "classificationTags": session_record.get("classificationTags") or [],
+                    "routerCauseHint": _build_cause_line(session_record),
+                    "representativeErrorGroup": {
+                        "component": representative_error_group.get("component"),
+                        "signature": representative_error_group.get("signature"),
+                        "count": representative_error_group.get("count"),
+                        "sampleTime": representative_error_group.get("sampleTime"),
+                        "sampleMessage": representative_error_group.get("sampleMessage"),
+                    },
                     "errorGroups": [
                         {
                             "component": group.get("component"),
@@ -963,6 +994,46 @@ def create_app() -> App:
             )
             if any(pattern in lowered for pattern in bad_patterns):
                 return True
+
+            return False
+
+        def _needs_barcode_log_error_summary_session_fallback(
+            synthesized: str,
+            session_payload: dict[str, Any],
+        ) -> bool:
+            if _is_bad_barcode_log_error_summary_session(synthesized):
+                return True
+
+            session = session_payload.get("session") if isinstance(session_payload, dict) else {}
+            if not isinstance(session, dict):
+                return False
+
+            tags = {
+                str(tag).strip()
+                for tag in (session.get("classificationTags") or [])
+                if str(tag).strip()
+            }
+            recordings_on_date_count = int(session.get("recordingsOnDateCount") or 0)
+            normalized = (synthesized or "").strip()
+            lowered = normalized.lower()
+
+            if recordings_on_date_count <= 0 and tags.intersection({"ffmpeg_error", "ffmpeg_sigterm", "recording_stalled"}):
+                if "녹화 & 업로드 실패" not in normalized:
+                    return True
+                if not any(token in normalized for token in ("ffmpeg", "SIGTERM", "sigterm", "stall", "캡처보드", "영상 입력")):
+                    return True
+
+            representative = session.get("representativeErrorGroup")
+            if isinstance(representative, dict):
+                representative_text = " ".join(
+                    str(representative.get(key) or "").strip().lower()
+                    for key in ("component", "signature")
+                )
+                if any(token in representative_text for token in ("ffmpeg", "sigterm", "recording may be stalled", "stalled")):
+                    if "app 오류" in normalized and not any(
+                        token in lowered for token in ("ffmpeg", "sigterm", "stall")
+                    ):
+                        return True
 
             return False
 
@@ -1050,7 +1121,7 @@ def create_app() -> App:
                         max_tokens=s.BARCODE_LOG_ERROR_SUMMARY_MAX_TOKENS,
                     )
                     final_section = synthesized_text or fallback_section
-                    if _is_bad_barcode_log_error_summary_session(final_section):
+                    if _needs_barcode_log_error_summary_session_fallback(final_section, session_payload):
                         final_section = fallback_section
                     rendered_sections.append(final_section)
 
@@ -1704,6 +1775,10 @@ def create_app() -> App:
         if not structured_hospital_name:
             structured_hospital_name = _extract_leading_hospital_scope(question)
         structured_hospital_seq, structured_hospital_room_seq = _extract_capture_seq_filters(question)
+        structured_device_name = _extract_device_name_scope(question)
+        structured_device_seq = _extract_device_seq_filter(question)
+        structured_device_status = _extract_device_status_filter(question)
+        structured_active_flag, structured_install_flag = _extract_device_flag_filters(question)
 
         if _is_hospitals_filter_query_request(
             question,
@@ -1773,6 +1848,55 @@ def create_app() -> App:
             except Exception:
                 logger.exception("Hospital rooms filters query failed")
                 reply("병실 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
+            return
+
+        if _is_devices_filter_query_request(
+            question,
+            device_name=structured_device_name,
+            device_seq=structured_device_seq,
+            hospital_name=structured_hospital_name,
+            room_name=structured_room_name,
+            hospital_seq=structured_hospital_seq,
+            hospital_room_seq=structured_hospital_room_seq,
+            status=structured_device_status,
+            active_flag=structured_active_flag,
+            install_flag=structured_install_flag,
+        ):
+            try:
+                result_text = _query_devices_by_filters(
+                    device_name=structured_device_name,
+                    device_seq=structured_device_seq,
+                    hospital_name=structured_hospital_name,
+                    room_name=structured_room_name,
+                    hospital_seq=structured_hospital_seq,
+                    hospital_room_seq=structured_hospital_room_seq,
+                    status=structured_device_status,
+                    active_flag=structured_active_flag,
+                    install_flag=structured_install_flag,
+                    count_only=_is_generic_count_or_existence_request(question),
+                )
+                reply(result_text)
+                logger.info(
+                    "Responded with devices filters in thread_ts=%s deviceName=%s deviceSeq=%s hospital=%s room=%s hospitalSeq=%s hospitalRoomSeq=%s status=%s activeFlag=%s installFlag=%s",
+                    thread_ts,
+                    structured_device_name,
+                    structured_device_seq,
+                    structured_hospital_name,
+                    structured_room_name,
+                    structured_hospital_seq,
+                    structured_hospital_room_seq,
+                    structured_device_status,
+                    structured_active_flag,
+                    structured_install_flag,
+                )
+            except ValueError as exc:
+                reply(f"장비 조회 요청 형식 오류: {exc}")
+            except (pymysql.MySQLError, RuntimeError):
+                logger.exception("Devices filters query failed")
+                reply("장비 조회 중 오류가 발생했어. DB 연결 정보와 네트워크 상태를 확인해줘")
+            except Exception:
+                logger.exception("Devices filters query failed")
+                reply("장비 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
             return
 
         if _is_ultrasound_capture_filter_query_request(

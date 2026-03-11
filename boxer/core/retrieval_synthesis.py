@@ -281,11 +281,13 @@ def _build_route_specific_rules(evidence_payload: Any) -> str:
             "10) 제공된 evidence만 사용해. 추정이면 반드시 `추정:`으로 시작해.\n"
             "11) `근거 로그`, `코드 근거`, `확실도`, 추가 섹션을 쓰지 마.\n"
             "12) restartDetected가 있으면 `정상 녹화 실패로 판단`이라고 확정형으로 써.\n"
-            "13) 날짜 기준 DB 영상 기록이 없고 stalled/ffmpeg 오류가 함께 있으면 `녹화 & 업로드 실패로 판단`이라고 써.\n"
-            "14) ffmpeg timestamp/DTS/PTS/invalid dropping 계열이면 캡처보드 연결 불량 또는 캡처보드 고장을 우선 의심한다고 적어.\n"
-            "15) Endpoint/Uploader/JWT/getaddrinfo EAI_AGAIN 계열만 있으면 녹화 실패 원인으로 단정하지 말고 통신/업로드 이상으로 설명해.\n"
-            "16) 조치는 한 줄에 `/`로 이어서 최대 3개만 적어.\n"
-            "17) 4줄로 끝내. 장황한 설명 금지."
+            "13) session.errorGroups의 첫 번째 항목만 대표 원인으로 쓰지 마. session.classificationTags, session.representativeErrorGroup, session.routerCauseHint, session.firstFfmpegError, session.recordingsOnDateCount, session.sessionDiagnostic를 같이 봐.\n"
+            "14) `startRecording() FFmpeg error encountered`, `generateThumbnail ffmpeg failed`, `ffmpeg was killed with signal SIGTERM`, `recording may be stalled` 같은 Recorder/FFmpeg 종료 신호는 app 계열 오류보다 우선 원인으로 해석해.\n"
+            "15) 날짜 기준 DB 영상 기록이 없고 Recorder/FFmpeg SIGTERM, stalled, firstFfmpegError가 있으면 `녹화 & 업로드 실패로 판단`이라고 써.\n"
+            "16) ffmpeg timestamp/DTS/PTS/invalid dropping 계열이면 캡처보드 연결 불량 또는 캡처보드 고장을 우선 의심한다고 적어.\n"
+            "17) Endpoint/Uploader/JWT/getaddrinfo EAI_AGAIN 계열만 있으면 녹화 실패 원인으로 단정하지 말고 통신/업로드 이상으로 설명해.\n"
+            "18) 조치는 한 줄에 `/`로 이어서 최대 3개만 적어.\n"
+            "19) 4줄로 끝내. 장황한 설명 금지."
         )
 
     if route != "barcode_log_analysis":

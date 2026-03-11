@@ -1307,6 +1307,188 @@ def _query_hospital_rooms_by_filters(
     return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
 
 
+def _query_devices_by_filters(
+    *,
+    device_name: str | None = None,
+    device_seq: int | None = None,
+    hospital_name: str | None = None,
+    room_name: str | None = None,
+    hospital_seq: int | None = None,
+    hospital_room_seq: int | None = None,
+    status: str | None = None,
+    active_flag: int | None = None,
+    install_flag: int | None = None,
+    count_only: bool = False,
+) -> str:
+    if not s.DB_HOST or not s.DB_USERNAME or not s.DB_PASSWORD or not s.DB_DATABASE:
+        raise RuntimeError("DB 접속 정보(DB_*)가 비어 있어")
+
+    normalized_device_name = str(device_name or "").strip() or None
+    normalized_hospital_name = str(hospital_name or "").strip() or None
+    normalized_room_name = str(room_name or "").strip() or None
+    normalized_status = str(status or "").strip() or None
+    if device_seq is not None:
+        device_seq = int(device_seq)
+    if hospital_seq is not None:
+        hospital_seq = int(hospital_seq)
+    if hospital_room_seq is not None:
+        hospital_room_seq = int(hospital_room_seq)
+    if active_flag is not None:
+        active_flag = int(active_flag)
+    if install_flag is not None:
+        install_flag = int(install_flag)
+
+    if not any(
+        (
+            normalized_device_name,
+            device_seq is not None,
+            normalized_hospital_name,
+            normalized_room_name,
+            hospital_seq is not None,
+            hospital_room_seq is not None,
+            normalized_status,
+            active_flag is not None,
+            install_flag is not None,
+        )
+    ):
+        raise ValueError(
+            "장비 조회는 장비명, deviceSeq, 병원명, 병실명, hospitalSeq, hospitalRoomSeq, status, activeFlag, installFlag 중 최소 1개 조건이 필요해"
+        )
+
+    where_clauses: list[str] = []
+    params: list[object] = []
+    if normalized_device_name:
+        where_clauses.append("d.deviceName = %s")
+        params.append(normalized_device_name)
+    if device_seq is not None:
+        where_clauses.append("d.seq = %s")
+        params.append(device_seq)
+    if normalized_hospital_name:
+        where_clauses.append("h.hospitalName = %s")
+        params.append(normalized_hospital_name)
+    if normalized_room_name:
+        where_clauses.append("hr.roomName = %s")
+        params.append(normalized_room_name)
+    if hospital_seq is not None:
+        where_clauses.append("d.hospitalSeq = %s")
+        params.append(hospital_seq)
+    if hospital_room_seq is not None:
+        where_clauses.append("d.hospitalRoomSeq = %s")
+        params.append(hospital_room_seq)
+    if normalized_status:
+        where_clauses.append("UPPER(COALESCE(d.status, '')) = UPPER(%s)")
+        params.append(normalized_status)
+    if active_flag is not None:
+        where_clauses.append("d.activeFlag = %s")
+        params.append(active_flag)
+    if install_flag is not None:
+        where_clauses.append("d.installFlag = %s")
+        params.append(install_flag)
+
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1 = 1"
+    limit = max(1, min(100, cs.RECORDINGS_CONTEXT_LIMIT))
+
+    connection = _create_db_connection(s.DB_QUERY_TIMEOUT_SEC)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS deviceCount "
+                "FROM devices d "
+                "LEFT JOIN hospitals h ON d.hospitalSeq = h.seq "
+                "LEFT JOIN hospital_rooms hr ON d.hospitalRoomSeq = hr.seq "
+                f"WHERE {where_sql}",
+                tuple(params),
+            )
+            summary = cursor.fetchone() or {}
+            total_count = int(summary.get("deviceCount") or 0)
+
+            rows: list[dict[str, Any]] = []
+            if not count_only and total_count > 0:
+                cursor.execute(
+                    "SELECT "
+                    "d.seq, "
+                    "d.hospitalSeq, "
+                    "d.hospitalRoomSeq, "
+                    "d.deviceName, "
+                    "d.description, "
+                    "d.status, "
+                    "d.activeFlag, "
+                    "d.installFlag, "
+                    "d.ep_online, "
+                    "d.ep_version, "
+                    "d.ep_videoDev, "
+                    "h.hospitalName AS hospitalName, "
+                    "hr.roomName AS roomName "
+                    "FROM devices d "
+                    "LEFT JOIN hospitals h ON d.hospitalSeq = h.seq "
+                    "LEFT JOIN hospital_rooms hr ON d.hospitalRoomSeq = hr.seq "
+                    f"WHERE {where_sql} "
+                    "ORDER BY d.seq DESC "
+                    "LIMIT %s",
+                    tuple([*params, limit]),
+                )
+                rows = cursor.fetchall() or []
+    finally:
+        connection.close()
+
+    lines = ["*장비 조회 결과*"]
+    if normalized_device_name:
+        lines.append(f"• 장비명: `{normalized_device_name}`")
+    if device_seq is not None:
+        lines.append(f"• deviceSeq: `{device_seq}`")
+    if normalized_hospital_name:
+        lines.append(f"• 병원: `{normalized_hospital_name}`")
+    if normalized_room_name:
+        lines.append(f"• 병실: `{normalized_room_name}`")
+    if hospital_seq is not None:
+        lines.append(f"• hospitalSeq: `{hospital_seq}`")
+    if hospital_room_seq is not None:
+        lines.append(f"• hospitalRoomSeq: `{hospital_room_seq}`")
+    if normalized_status:
+        lines.append(f"• status: `{normalized_status}`")
+    if active_flag is not None:
+        lines.append(f"• activeFlag: `{active_flag}`")
+    if install_flag is not None:
+        lines.append(f"• installFlag: `{install_flag}`")
+    lines.append(f"• devices row 수: *{total_count}개*")
+
+    if count_only:
+        return "\n".join(lines)
+
+    if total_count <= 0:
+        lines.append("• 결과: 조건에 맞는 장비 기록이 없어")
+        return "\n".join(lines)
+
+    lines.append("• 장비 목록(최신 seq순):")
+    for index, row in enumerate(rows, start=1):
+        ep_online = row.get("ep_online")
+        ep_online_label = _format_recorded_at_local(ep_online) if ep_online else "미확인"
+        lines.extend(
+            [
+                f"- {index}.",
+                f"  deviceSeq: `{_display_value(row.get('seq'), default='미확인')}`",
+                f"  장비명: `{_display_value(row.get('deviceName'), default='미확인')}`",
+                f"  병원: `{_display_value(row.get('hospitalName'), default='미확인')}`",
+                f"  병실: `{_display_value(row.get('roomName'), default='미확인')}`",
+                f"  status: `{_display_value(row.get('status'), default='미확인')}`",
+                f"  상태: `activeFlag={_display_value(row.get('activeFlag'), default='미확인')} | installFlag={_display_value(row.get('installFlag'), default='미확인')}`",
+                f"  ep_online(KST): `{ep_online_label}`",
+                f"  ep_version: `{_display_value(row.get('ep_version'), default='미확인')}`",
+                f"  ep_videoDev: `{_display_value(row.get('ep_videoDev'), default='미확인')}`",
+            ]
+        )
+        description = _display_value(row.get("description"), default="")
+        if description:
+            lines.append(f"  description: `{description}`")
+        lines.append("")
+
+    if lines and lines[-1] == "":
+        lines.pop()
+    if total_count > len(rows):
+        lines.append(f"• 참고: 최근 `{len(rows)}개`만 표시했고 이전 장비는 생략했어")
+    return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
+
+
 def _lookup_device_contexts_by_barcode(
     barcode: str,
     recordings_context: dict[str, Any] | None = None,

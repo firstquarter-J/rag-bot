@@ -54,6 +54,24 @@ _HOSPITAL_ROOM_SEQ_PATTERN = re.compile(
     r"(?:hospitalroomseq|hospital_room_seq|병실seq)\s*[:=]?\s*(\d+)",
     re.IGNORECASE,
 )
+_DEVICE_SEQ_PATTERN = re.compile(
+    r"(?:deviceseq|device_seq|device\s*seq|장비seq)\s*[:=]?\s*(\d+)",
+    re.IGNORECASE,
+)
+_DEVICE_NAME_SCOPE_PATTERN = re.compile(
+    r"(?:^|[\s)])(?:장비명|devicename)\s*[:=]?\s*([A-Za-z0-9._-]+)",
+    re.IGNORECASE,
+)
+_LEADING_DEVICE_NAME_SCOPE_PATTERN = re.compile(
+    r"^\s*([A-Za-z0-9]+-[A-Za-z0-9-]+)\s+(?:장비|devices?|device)\b",
+    re.IGNORECASE,
+)
+_DEVICE_STATUS_PATTERN = re.compile(
+    r"(?:장비\s*상태|장비status|device\s*status|status)\s*[:=]?\s*([A-Za-z_]+)",
+    re.IGNORECASE,
+)
+_ACTIVE_FLAG_PATTERN = re.compile(r"(?:activeflag|활성\s*flag)\s*[:=]?\s*([01])", re.IGNORECASE)
+_INSTALL_FLAG_PATTERN = re.compile(r"(?:installflag|설치\s*flag)\s*[:=]?\s*([01])", re.IGNORECASE)
 _RAW_LOG_LEVEL_PATTERN = re.compile(
     r"^\[[^\]]+\]\s+\[[^\]]+\]\s+\[\s*([A-Za-z]+)\s*\]",
     re.IGNORECASE,
@@ -97,6 +115,21 @@ _ROOMS_QUERY_HINT_TOKENS = (
     "진료실 있나",
     "진료실 있는지",
     "hospital_rooms",
+)
+_DEVICE_QUERY_HINT_TOKENS = (
+    "장비 조회",
+    "장비 목록",
+    "장비 개수",
+    "장비 몇",
+    "장비 수",
+    "장비 있나",
+    "장비 있는지",
+    "장비 유무",
+    "장비 상태",
+    "장비 정보",
+    "장비명",
+    "devices",
+    "devicename",
 )
 
 
@@ -439,6 +472,58 @@ def _is_hospital_rooms_filter_query_request(
     return has_scope and has_hospital_context and has_room_hint and not has_media_hint
 
 
+def _is_devices_filter_query_request(
+    question: str,
+    *,
+    device_name: str | None,
+    device_seq: int | None,
+    hospital_name: str | None,
+    room_name: str | None,
+    hospital_seq: int | None,
+    hospital_room_seq: int | None,
+    status: str | None,
+    active_flag: int | None,
+    install_flag: int | None,
+) -> bool:
+    text = (question or "").strip()
+    lowered = text.lower()
+    has_device_hint = any(token in text for token in _DEVICE_QUERY_HINT_TOKENS) or any(
+        token in lowered for token in ("device", "devices", "devicename", "deviceseq")
+    )
+    has_media_hint = any(
+        token in text
+        for token in (
+            "영상",
+            "비디오",
+            "녹화",
+            "recording",
+            "캡처",
+            "capture",
+            "스냅샷",
+            "snapshot",
+            "로그",
+            "fileid",
+            "파일",
+            "다운로드",
+            "복구",
+        )
+    ) or bool(re.search(r"\blog\b", lowered))
+    has_scope = any(
+        (
+            device_name,
+            device_seq is not None,
+            hospital_name,
+            room_name,
+            hospital_seq is not None,
+            hospital_room_seq is not None,
+            status,
+            active_flag is not None,
+            install_flag is not None,
+        )
+    )
+    return bool(has_scope and has_device_hint and not has_media_hint)
+
+
 def _is_barcode_video_count_request(question: str, barcode: str | None) -> bool:
     if not barcode:
         return False
@@ -668,6 +753,64 @@ def _extract_capture_seq_filters(question: str) -> tuple[int | None, int | None]
     hospital_seq = int(hospital_seq_match.group(1)) if hospital_seq_match else None
     hospital_room_seq = int(hospital_room_seq_match.group(1)) if hospital_room_seq_match else None
     return hospital_seq, hospital_room_seq
+
+
+def _extract_device_seq_filter(question: str) -> int | None:
+    text = str(question or "").strip()
+    matched = _DEVICE_SEQ_PATTERN.search(text)
+    if not matched:
+        return None
+    return int(matched.group(1))
+
+
+def _extract_device_name_scope(question: str) -> str | None:
+    text = str(question or "").strip()
+    matched = _DEVICE_NAME_SCOPE_PATTERN.search(text)
+    if not matched:
+        matched = _LEADING_DEVICE_NAME_SCOPE_PATTERN.search(text)
+    if not matched:
+        return None
+
+    candidate = " ".join(str(matched.group(1) or "").split()).strip().strip("`'\"")
+    if not candidate:
+        return None
+    if re.fullmatch(r"(?:조회|목록|개수|수|정보|상태)", candidate, flags=re.IGNORECASE):
+        return None
+    return candidate
+
+
+def _extract_device_status_filter(question: str) -> str | None:
+    text = str(question or "").strip()
+    matched = _DEVICE_STATUS_PATTERN.search(text)
+    if not matched:
+        return None
+    candidate = str(matched.group(1) or "").strip().strip("`'\"")
+    if not candidate:
+        return None
+    return candidate
+
+
+def _extract_device_flag_filters(question: str) -> tuple[int | None, int | None]:
+    text = str(question or "").strip()
+    lowered = text.lower()
+
+    active_match = _ACTIVE_FLAG_PATTERN.search(text)
+    active_flag = int(active_match.group(1)) if active_match else None
+    if active_flag is None:
+        if any(token in text for token in ("비활성 장비", "비활성된 장비")) or "inactive device" in lowered:
+            active_flag = 0
+        elif any(token in text for token in ("활성 장비", "활성된 장비")) or "active device" in lowered:
+            active_flag = 1
+
+    install_match = _INSTALL_FLAG_PATTERN.search(text)
+    install_flag = int(install_match.group(1)) if install_match else None
+    if install_flag is None:
+        if any(token in text for token in ("미설치 장비", "미설치된 장비", "설치 안된 장비", "설치 안 된 장비")):
+            install_flag = 0
+        elif any(token in text for token in ("설치 장비", "설치된 장비")):
+            install_flag = 1
+
+    return active_flag, install_flag
 
 
 def _is_ultrasound_capture_request(question: str, barcode: str | None) -> bool:
