@@ -895,7 +895,7 @@ def _render_file_candidate_result(
 
     if compact_file_list:
         lines = [
-            "*장비 파일 목록 조회 결과*",
+            "*장비에 존재하는 영상 목록 조회 결과*",
             f"• 바코드: `{barcode}`",
             f"• 날짜: `{log_date}`",
             f"• 세션이 확인된 장비: `{len(records)}개`",
@@ -920,7 +920,7 @@ def _render_file_candidate_result(
                         seen.add(file_name)
                         file_names.append(file_name)
             if file_names:
-                lines.append(f"• 파일 목록: `{len(file_names)}개`")
+                lines.append(f"• 장비에 존재하는 영상 목록: `{len(file_names)}개`")
                 for file_name in file_names:
                     lines.append(f"  - `{file_name}`")
             else:
@@ -930,7 +930,7 @@ def _render_file_candidate_result(
                         f"• 장비 파일 확인: 실패 ({_display_device_probe_reason(record_probe.get('sshReason'))})"
                     )
                 else:
-                    lines.append("• 파일 목록: `0개`")
+                    lines.append("• 장비에 존재하는 영상 목록: `0개`")
         return _truncate_text("\n".join(lines), 38000)
 
     if compact_file_id:
@@ -1015,7 +1015,7 @@ def _render_file_candidate_result(
                         download_failures.append(failure_reason)
 
             if file_names:
-                lines.append(f"• 장비 파일 목록: `{len(file_names)}개`")
+                lines.append(f"• 장비에 존재하는 영상 목록: `{len(file_names)}개`")
                 for file_name in file_names:
                     lines.append(f"  - `{file_name}`")
             else:
@@ -1025,7 +1025,7 @@ def _render_file_candidate_result(
                         f"• 장비 파일 확인: 실패 ({_display_device_probe_reason(record_probe.get('sshReason'))})"
                     )
                 else:
-                    lines.append("• 장비 파일 목록: `0개`")
+                    lines.append("• 장비에 존재하는 영상 목록: `0개`")
 
             successful_items = [item for item in download_items if item.get("ok")]
             if successful_items:
@@ -1105,7 +1105,7 @@ def _render_file_candidate_result(
                         upload_failures.append(failure_reason)
 
             if file_names:
-                lines.append(f"• 장비 파일 목록: `{len(file_names)}개`")
+                lines.append(f"• 장비에 존재하는 영상 목록: `{len(file_names)}개`")
                 for file_name in file_names:
                     lines.append(f"  - `{file_name}`")
             else:
@@ -1115,7 +1115,7 @@ def _render_file_candidate_result(
                         f"• 장비 파일 확인: 실패 ({_display_device_probe_reason(record_probe.get('sshReason'))})"
                     )
                 else:
-                    lines.append("• 장비 파일 목록: `0개`")
+                    lines.append("• 장비에 존재하는 영상 목록: `0개`")
 
             if upload_items:
                 lines.append(f"• 복구 업로드 결과: `{len(upload_items)}개`")

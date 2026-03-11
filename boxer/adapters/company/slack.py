@@ -720,7 +720,7 @@ def _render_device_download_dm_text(
         lines.append(f"• 병원: `{record['hospitalName']}`")
         lines.append(f"• 병실: `{record['roomName']}`")
         file_names = record.get("fileNames") or []
-        lines.append(f"• 장비 파일 목록: `{len(file_names)}개`")
+        lines.append(f"• 장비에 존재하는 영상 목록: `{len(file_names)}개`")
         for file_name in file_names:
             lines.append(f"  - `{file_name}`")
         download_links = record.get("downloadLinks") or []
@@ -751,7 +751,7 @@ def _render_device_download_thread_notice(
         lines.append(f"• 병원: `{record['hospitalName']}`")
         lines.append(f"• 병실: `{record['roomName']}`")
         file_names = record.get("fileNames") or []
-        lines.append(f"• 장비 파일 목록: `{len(file_names)}개`")
+        lines.append(f"• 장비에 존재하는 영상 목록: `{len(file_names)}개`")
         for file_name in file_names:
             lines.append(f"  - `{file_name}`")
         lines.append(f"• 다운로드 링크: DM으로 보냈어 (`{len(record.get('downloadLinks') or [])}개`)")
@@ -781,7 +781,7 @@ def _render_device_download_dm_failure_notice(
         lines.append(f"• 병원: `{record['hospitalName']}`")
         lines.append(f"• 병실: `{record['roomName']}`")
         file_names = record.get("fileNames") or []
-        lines.append(f"• 장비 파일 목록: `{len(file_names)}개`")
+        lines.append(f"• 장비에 존재하는 영상 목록: `{len(file_names)}개`")
         for file_name in file_names:
             lines.append(f"  - `{file_name}`")
     lines.append("• 다운로드 링크: DM 전송 실패. 봇 DM 권한을 확인해줘")
