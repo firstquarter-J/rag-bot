@@ -63,7 +63,7 @@ _DEVICE_NAME_SCOPE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _LEADING_DEVICE_NAME_SCOPE_PATTERN = re.compile(
-    r"^\s*([A-Za-z0-9]+-[A-Za-z0-9-]+)\s+(?:장비|devices?|device)\b",
+    r"^\s*([A-Za-z0-9]+-[A-Za-z0-9-]+)\s+(?:장비|devices?|device|정보|상태)\b",
     re.IGNORECASE,
 )
 _DEVICE_STATUS_PATTERN = re.compile(
@@ -490,6 +490,8 @@ def _is_devices_filter_query_request(
     has_device_hint = any(token in text for token in _DEVICE_QUERY_HINT_TOKENS) or any(
         token in lowered for token in ("device", "devices", "devicename", "deviceseq")
     )
+    if not has_device_hint and device_name:
+        has_device_hint = any(token in text for token in ("정보", "상태", "상세", "세부"))
     has_media_hint = any(
         token in text
         for token in (
