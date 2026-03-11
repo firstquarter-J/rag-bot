@@ -45,6 +45,7 @@ query PaginatedDevices($listOptions: DeviceListOptions!) {
   paginatedDevices(listOptions: $listOptions) {
     nodes {
       deviceName
+      version
       hospital {
         hospitalName
       }
@@ -238,7 +239,26 @@ def _extract_device_row(data: dict[str, Any], device_name: str) -> dict[str, Any
     return exact_match or fallback_match
 
 
-def _get_mda_device_agent_ssh(device_name: str) -> dict[str, Any] | None:
+def _normalize_mda_device_detail(row: dict[str, Any], *, device_name: str) -> dict[str, Any]:
+    hospital = row.get("hospital") if isinstance(row.get("hospital"), dict) else {}
+    hospital_room = row.get("hospitalRoom") if isinstance(row.get("hospitalRoom"), dict) else {}
+    agent_state = row.get("agentState") if isinstance(row.get("agentState"), dict) else {}
+    agent_ssh = _normalize_agent_ssh(agent_state.get("agentSsh"))
+    version = _display_value(row.get("version"), default="")
+    if version.upper() == "NONE":
+        version = ""
+
+    return {
+        "deviceName": _display_value(row.get("deviceName"), default=device_name),
+        "version": version,
+        "hospitalName": _display_value(hospital.get("hospitalName"), default="미확인"),
+        "roomName": _display_value(hospital_room.get("roomName"), default="미확인"),
+        "isConnected": bool(agent_state.get("isConnected")),
+        "agentSsh": agent_ssh,
+    }
+
+
+def _get_mda_device_detail(device_name: str) -> dict[str, Any] | None:
     data = _execute_mda_graphql(
         _PAGINATED_DEVICES_QUERY,
         {
@@ -252,19 +272,27 @@ def _get_mda_device_agent_ssh(device_name: str) -> dict[str, Any] | None:
     row = _extract_device_row(data, device_name)
     if not row:
         return None
+    return _normalize_mda_device_detail(row, device_name=device_name)
 
-    hospital = row.get("hospital") if isinstance(row.get("hospital"), dict) else {}
-    hospital_room = row.get("hospitalRoom") if isinstance(row.get("hospitalRoom"), dict) else {}
-    agent_state = row.get("agentState") if isinstance(row.get("agentState"), dict) else {}
-    agent_ssh = _normalize_agent_ssh(agent_state.get("agentSsh"))
 
-    return {
-        "deviceName": _display_value(row.get("deviceName"), default=device_name),
-        "hospitalName": _display_value(hospital.get("hospitalName"), default="미확인"),
-        "roomName": _display_value(hospital_room.get("roomName"), default="미확인"),
-        "isConnected": bool(agent_state.get("isConnected")),
-        "agentSsh": agent_ssh,
-    }
+def _get_mda_device_agent_ssh(device_name: str) -> dict[str, Any] | None:
+    return _get_mda_device_detail(device_name)
+
+
+def _get_mda_device_versions(device_names: list[str]) -> dict[str, str]:
+    versions: dict[str, str] = {}
+    seen_names: set[str] = set()
+    for raw_name in device_names:
+        normalized_name = str(raw_name or "").strip()
+        if not normalized_name or normalized_name in seen_names:
+            continue
+        seen_names.add(normalized_name)
+
+        detail = _get_mda_device_detail(normalized_name)
+        version = str((detail or {}).get("version") or "").strip()
+        if version:
+            versions[normalized_name] = version
+    return versions
 
 
 def _open_mda_device_ssh(

@@ -14,7 +14,11 @@ from boxer.company import settings as cs
 from boxer.core import settings as s
 from boxer.core.utils import _display_value, _format_datetime, _truncate_text
 from boxer.routers.common.db import _create_db_connection
-from boxer.routers.company.mda_graphql import _is_mda_graphql_configured, _wait_for_mda_device_agent_ssh
+from boxer.routers.company.mda_graphql import (
+    _get_mda_device_versions,
+    _is_mda_graphql_configured,
+    _wait_for_mda_device_agent_ssh,
+)
 
 
 def _local_zone() -> ZoneInfo:
@@ -155,6 +159,25 @@ def _lookup_device_ssh_status(device_name: str) -> str:
     return "연결 가능"
 
 
+def _lookup_device_versions(device_names: list[object]) -> dict[str, str]:
+    normalized_names: list[str] = []
+    seen_names: set[str] = set()
+    for raw_name in device_names:
+        normalized_name = str(raw_name or "").strip()
+        if not normalized_name or normalized_name in seen_names:
+            continue
+        seen_names.add(normalized_name)
+        normalized_names.append(normalized_name)
+
+    if not normalized_names or not _is_mda_graphql_configured():
+        return {}
+
+    try:
+        return _get_mda_device_versions(normalized_names)
+    except Exception:
+        return {}
+
+
 def _build_device_detail_lines(
     row: dict[str, Any],
     *,
@@ -164,6 +187,7 @@ def _build_device_detail_lines(
     lines = [
         f"{line_prefix}장비 번호: `{_display_value(row.get('seq'), default='미확인')}`",
         f"{line_prefix}장비명: `{_display_value(row.get('deviceName'), default='미확인')}`",
+        f"{line_prefix}버전: `{_display_value(row.get('version'), default='미확인')}`",
         f"{line_prefix}병원: `{_display_value(row.get('hospitalName'), default='미확인')}`",
         f"{line_prefix}병실: `{_display_value(row.get('roomName'), default='미확인')}`",
         f"{line_prefix}status: `{_display_value(row.get('status'), default='미확인')}`",
@@ -1638,6 +1662,14 @@ def _query_devices_by_filters(
                 rows = cursor.fetchall() or []
     finally:
         connection.close()
+
+    if rows:
+        version_by_name = _lookup_device_versions([row.get("deviceName") for row in rows])
+        if version_by_name:
+            for row in rows:
+                device_name = _display_value(row.get("deviceName"), default="")
+                if device_name in version_by_name:
+                    row["version"] = version_by_name[device_name]
 
     lines = ["*장비 조회 결과*"]
     summary_lines: list[str] = []
