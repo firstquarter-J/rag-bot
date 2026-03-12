@@ -435,6 +435,7 @@ def _build_notion_doc_fallback(question: str, references: list[dict[str, Any]] |
         if len(preview_fragments) >= 8:
             break
 
+    is_barcode_sync_doc = primary_title == "바코드 동기화: 분만 병원에서 핑크 바코드가 스캔되는 경우"
     normalized_question = (question or "").strip()
     is_reason_question = any(token in normalized_question for token in ("왜", "원인", "이유"))
     is_restart_question = any(token in normalized_question for token in ("재부팅", "재시작", "껐다", "켜야"))
@@ -494,13 +495,23 @@ def _build_notion_doc_fallback(question: str, references: list[dict[str, Any]] |
     if not action:
         action = "문서 기준 확인 필요"
 
+    if is_barcode_sync_doc and not is_meaning_question:
+        if is_restart_question:
+            barcode_sync_conclusion = "재부팅이 필수는 아니고, 마미박스는 매일 핑크 바코드 동기화를 시도해"
+        else:
+            barcode_sync_conclusion = "지금은 장비가 최신 핑크 바코드까지 동기화하지 못해서 분만 병원에서도 스캔된 거로 봐"
+        lines.append(f"• 결론: {barcode_sync_conclusion}")
+        lines.append("• 확인: 핑크 바코드 동기화가 가능한 버전인지 먼저 확인해")
+        lines.append("• 조치: 마미박스를 핑크 바코드 동기화가 가능한 버전으로 업데이트해야 해. 1회당 약 10일치 바코드를 가져오고, 매일 동기화를 시도해. 현재 기본 DB에는 1월 1일부터의 핑크 바코드 목록이 있어")
+        return "\n".join(lines)
+
     lines.append(f"• 결론: {conclusion}")
     lines.append(f"• 확인: {confirm}")
     lines.append(f"• 조치: {action}")
     return "\n".join(lines)
 
 
-def _needs_notion_doc_fallback(text: str, route_name: str) -> bool:
+def _needs_notion_doc_fallback(text: str, route_name: str, fallback_text: str = "") -> bool:
     if route_name != "notion playbook qa":
         return False
 
@@ -510,6 +521,14 @@ def _needs_notion_doc_fallback(text: str, route_name: str) -> bool:
     if normalized == _build_notion_doc_security_refusal():
         return False
     if not normalized.startswith("*문서 기반 답변*"):
+        return True
+
+    fallback_normalized = (fallback_text or "").strip()
+    lowered = normalized.lower()
+    fallback_lowered = fallback_normalized.lower()
+    if "핑크 바코드 동기화가 가능한 버전" in fallback_normalized and "핑크 바코드 동기화가 가능한 버전" not in normalized:
+        return True
+    if "cfg1_barcode_sync_date" in lowered and "cfg1_barcode_sync_date" not in fallback_lowered:
         return True
 
     required_bullets = (
@@ -1172,7 +1191,7 @@ def create_app() -> App:
                     final_text = fallback_with_references
                 if _needs_recording_failure_analysis_fallback(final_text, fallback_text, route_name):
                     final_text = fallback_with_references
-                if _needs_notion_doc_fallback(final_text, route_name):
+                if _needs_notion_doc_fallback(final_text, route_name, fallback_text):
                     final_text = fallback_with_references
                 if _needs_notion_doc_security_refusal(final_text, route_name):
                     final_text = _build_notion_doc_security_refusal()

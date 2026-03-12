@@ -157,7 +157,7 @@ _COMPANY_NOTION_DOCS: tuple[dict[str, Any], ...] = (
     },
     {
         "title": "바코드 동기화: 분만 병원에서 핑크 바코드가 스캔되는 경우",
-        "url": "https://www.notion.so/321cf826870c8148a737da20a4bdf07f",
+        "url": "https://www.notion.so/humanscape/321b459793c880c5ba5af9705a905c15",
         "keywords": (
             "바코드 동기화",
             "핑크 바코드",
@@ -318,6 +318,8 @@ def select_company_notion_doc_links(
 
     seed_titles = _build_seed_titles(notion_playbooks)
     has_overview_intent = any(token in normalized_question for token in _COMPANY_DOC_OVERVIEW_TOKENS)
+    require_exact_title_match = bool(seed_titles) and not has_overview_intent
+    primary_seed_title = seed_titles[0] if seed_titles else ""
     scored: list[tuple[int, dict[str, Any]]] = []
 
     for entry in _COMPANY_NOTION_DOCS:
@@ -328,6 +330,10 @@ def select_company_notion_doc_links(
         entry_terms = set(_extract_lookup_terms(title))
         for keyword in keywords:
             entry_terms.update(_extract_lookup_terms(keyword))
+
+        title_matches_seed = normalized_title == primary_seed_title if primary_seed_title else False
+        if require_exact_title_match and not title_matches_seed:
+            continue
 
         score = 0
         for seed_title in seed_titles:
