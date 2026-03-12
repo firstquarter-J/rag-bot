@@ -24,6 +24,20 @@ _COMPANY_DOC_OVERVIEW_TOKENS = {
     "운영",
 }
 
+_COMPOUND_TERM_SUFFIXES = (
+    "방법",
+    "가이드",
+    "설정",
+    "절차",
+    "이슈",
+    "문제",
+    "오류",
+    "장애",
+    "불가",
+    "안됨",
+    "법",
+)
+
 _COMPANY_NOTION_DOCS: tuple[dict[str, Any], ...] = (
     {
         "title": "마미박스",
@@ -275,6 +289,18 @@ def _extract_lookup_terms(text: str) -> list[str]:
             continue
         seen.add(token)
         terms.append(token)
+        for suffix in _COMPOUND_TERM_SUFFIXES:
+            if not token.endswith(suffix):
+                continue
+            prefix = token[: -len(suffix)].strip()
+            if len(prefix) < 2:
+                continue
+            if prefix not in seen:
+                seen.add(prefix)
+                terms.append(prefix)
+            if len(suffix) >= 2 and suffix not in seen:
+                seen.add(suffix)
+                terms.append(suffix)
     return terms
 
 
