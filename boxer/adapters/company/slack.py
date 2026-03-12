@@ -109,6 +109,7 @@ _NOTION_DOC_QUERY_TOKENS = (
     "마미박스",
     "mommybox",
     "박스",
+    "동기화",
     "베이비매직",
     "babymagic",
     "바이오스",
@@ -132,6 +133,14 @@ _NOTION_DOC_QUERY_TOKENS = (
     "299",
     "캡처보드",
     "바코드 스캐너",
+    "바코드 동기화",
+    "핑크 바코드",
+    "무료 바코드",
+    "유료 바코드",
+    "분만 병원",
+    "비분만 병원",
+    "온라인 상태",
+    "cfg1_barcode_sync_date",
     "프로비저닝",
     "오디오",
     "사운드케이블",
@@ -329,49 +338,165 @@ def _needs_notion_doc_security_refusal(text: str, route_name: str) -> bool:
 
 
 def _build_notion_doc_fallback(question: str, references: list[dict[str, Any]] | None) -> str:
+    def _clean_preview_line(text: str) -> str:
+        line = re.sub(r"^#+\s*", "", str(text or "").strip())
+        line = re.sub(r"^[-*•]\s*", "", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if ":" in line:
+            prefix, rest = line.split(":", 1)
+            normalized_prefix = prefix.strip()
+            if normalized_prefix and (
+                len(normalized_prefix) <= 24
+                or normalized_prefix.endswith(("돼요", "되나", "포인트", "기준"))
+                or normalized_prefix in {"정책", "전제", "운영 기준", "실제 사례"}
+            ):
+                line = rest.strip()
+        replacements = (
+            (
+                "비분만 병원에서 무료 발급한 바코드(핑크 바코드)는 바코드를 유료로 판매하는 분만 병원 장비에서 스캔되지 않아야 함",
+                "무료 바코드는 분만 병원에서 스캔되면 안 돼",
+            ),
+            (
+                "이 정책은 분만 병원 마미박스가 온라인 상태에서 바코드 동기화를 받아야 반영됨",
+                "온라인 바코드 동기화가 돼야 반영돼",
+            ),
+            (
+                "장비의 마지막 바코드 동기화 일자가 오래되면 최신 제한 대상 바코드를 아직 내려받지 못해 녹화 준비로 넘어갈 수 있음",
+                "동기화가 밀리면 차단 바코드가 아직 반영되지 않을 수 있어",
+            ),
+            (
+                "오프라인이거나 동기화가 밀린 장비는 무료 바코드 차단 정책이 늦게 반영될 수 있음",
+                "오프라인 장비는 차단 반영이 늦을 수 있어",
+            ),
+            (
+                "마지막 바코드 동기화 일자와 `cfg1_barcode_sync_date` 갱신 여부를 먼저 확인",
+                "마지막 동기화 일자와 `cfg1_barcode_sync_date`를 확인해",
+            ),
+            (
+                "마지막 바코드 동기화 일자와 cfg1_barcode_sync_date 갱신 여부를 먼저 확인",
+                "마지막 동기화 일자와 `cfg1_barcode_sync_date`를 확인해",
+            ),
+            (
+                "아니고 평소에도 동기화는 계속 진행된다. 다만 재시작 직후에는 동기화가 실제로 도는지 확인하기 쉽다",
+                "재부팅이 필수는 아니고 평소에도 동기화는 계속 돌아가",
+            ),
+            (
+                "아니야. 평소에도 동기화는 계속 돌아가고, 재시작은 동기화가 실제로 진행됐는지 확인하기 쉬운 시점이야",
+                "재부팅이 필수는 아니고 평소에도 동기화는 계속 돌아가",
+            ),
+            (
+                "일반 사용 중에는 재부팅을 하지 않아도 매일 동기화가 진행된다고 보면 됨",
+                "평소에도 매일 동기화가 진행돼",
+            ),
+        )
+        for source, target in replacements:
+            line = line.replace(source, target)
+        return line[:90]
+
+    def _pick_preview_line(
+        lines: list[str],
+        *,
+        include_tokens: tuple[str, ...] = (),
+        exclude_texts: set[str] | None = None,
+    ) -> str:
+        excluded = exclude_texts or set()
+        for line in lines:
+            if not line or line in excluded:
+                continue
+            if include_tokens and not any(token in line for token in include_tokens):
+                continue
+            return line
+        return ""
+
     items = [item for item in (references or []) if isinstance(item, dict)]
     lines = ["*문서 기반 답변*"]
     if not items:
-        lines.append("• 한줄 요약: 관련 문서를 찾지 못했어")
-        lines.append("• 먼저 볼 것: 증상이나 키워드를 조금 더 구체적으로 알려줘")
-        lines.append("• 바로 할 일: 관련 문서 제목이나 장애 증상을 같이 말해줘")
+        lines.append("• 결론: 관련 문서를 못 찾았어")
+        lines.append("• 확인: 증상이나 키워드를 더 구체적으로 말해줘")
+        lines.append("• 조치: 문서 제목이나 장애 증상을 같이 보내줘")
         return "\n".join(lines)
 
     primary_title = str(items[0].get("title") or "").strip() or "제목 미상"
     preview_fragments: list[str] = []
-    for item in items[:2]:
+    for item in items[:3]:
         for raw_line in item.get("previewLines") or []:
-            line = str(raw_line or "").strip()
+            line = _clean_preview_line(raw_line)
             if not line:
                 continue
             if line == str(item.get("title") or "").strip():
                 continue
             if line.startswith("- page_id="):
                 continue
+            if line in preview_fragments:
+                continue
             preview_fragments.append(line)
-            if len(preview_fragments) >= 3:
+            if len(preview_fragments) >= 8:
                 break
-        if len(preview_fragments) >= 3:
+        if len(preview_fragments) >= 8:
             break
 
-    secondary_titles = [
-        str(item.get("title") or "").strip()
-        for item in items[1:3]
-        if str(item.get("title") or "").strip()
-    ]
-    summary_line = preview_fragments[0] if preview_fragments else f"`{primary_title}` 기준으로 확인해"
-    inspect_line = preview_fragments[1] if len(preview_fragments) > 1 else f"`{primary_title}` 문서를 먼저 봐"
-    action_fragments = preview_fragments[2:4]
-    action_line = " / ".join(action_fragments) if action_fragments else "문서 기준 확인 필요"
-    note_line = (
-        ", ".join(f"`{title}`" for title in secondary_titles)
-        if secondary_titles
-        else f"`{primary_title}` 기준으로 우선 점검해"
+    normalized_question = (question or "").strip()
+    is_reason_question = any(token in normalized_question for token in ("왜", "원인", "이유"))
+    is_restart_question = any(token in normalized_question for token in ("재부팅", "재시작", "껐다", "켜야"))
+    is_meaning_question = "cfg1_barcode_sync_date" in normalized_question or any(
+        token in normalized_question for token in ("뭐야", "무엇", "뜻", "의미")
     )
-    lines.append(f"• 한줄 요약: {summary_line}")
-    lines.append(f"• 먼저 볼 것: {inspect_line}")
-    lines.append(f"• 바로 할 일: {action_line}")
-    lines.append(f"• 참고 메모: {note_line}")
+
+    conclusion = ""
+    if is_restart_question:
+        conclusion = _pick_preview_line(
+            preview_fragments,
+            include_tokens=("재부팅", "재시작"),
+        )
+    elif is_reason_question:
+        conclusion = _pick_preview_line(
+            preview_fragments,
+            include_tokens=("반영되지", "스캔될 수 있어", "왜 스캔되나", "원인"),
+        )
+    elif is_meaning_question:
+        conclusion = _pick_preview_line(
+            preview_fragments,
+            include_tokens=("cfg1_barcode_sync_date",),
+        )
+    if not conclusion:
+        conclusion = _pick_preview_line(
+            preview_fragments,
+            include_tokens=("안 돼", "동기화", "원인"),
+        ) or (preview_fragments[0] if preview_fragments else f"`{primary_title}` 기준 확인 필요")
+
+    used_lines = {conclusion}
+    confirm = _pick_preview_line(
+        preview_fragments,
+        include_tokens=("확인 포인트", "cfg1_barcode_sync_date", "마지막 동기화"),
+        exclude_texts=used_lines,
+    )
+    if not confirm:
+        confirm = _pick_preview_line(
+            preview_fragments,
+            include_tokens=("전제:", "온라인", "동기화"),
+            exclude_texts=used_lines,
+        )
+    if not confirm:
+        confirm = _pick_preview_line(preview_fragments, exclude_texts=used_lines) or f"`{primary_title}` 문서를 먼저 봐"
+    used_lines.add(confirm)
+
+    action = _pick_preview_line(
+        preview_fragments,
+        include_tokens=("확인 포인트", "cfg1_barcode_sync_date", "마지막 동기화"),
+        exclude_texts=used_lines,
+    )
+    if not action:
+        action = _pick_preview_line(
+            preview_fragments,
+            include_tokens=("온라인", "오프라인", "동기화"),
+            exclude_texts=used_lines,
+        )
+    if not action:
+        action = "문서 기준 확인 필요"
+
+    lines.append(f"• 결론: {conclusion}")
+    lines.append(f"• 확인: {confirm}")
+    lines.append(f"• 조치: {action}")
     return "\n".join(lines)
 
 
@@ -388,9 +513,9 @@ def _needs_notion_doc_fallback(text: str, route_name: str) -> bool:
         return True
 
     required_bullets = (
-        "• 한줄 요약:",
-        "• 먼저 볼 것:",
-        "• 바로 할 일:",
+        "• 결론:",
+        "• 확인:",
+        "• 조치:",
     )
     return any(bullet not in normalized for bullet in required_bullets)
 

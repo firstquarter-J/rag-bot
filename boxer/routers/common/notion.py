@@ -53,6 +53,24 @@ _LOW_SIGNAL_NOTION_TERMS = {
 }
 _NOTION_QUERY_EXPANSIONS = (
     {
+        "tokens": (
+            "핑크 바코드",
+            "무료 바코드",
+            "유료 바코드",
+            "바코드 동기화",
+            "cfg1_barcode_sync_date",
+        ),
+        "aliases": (
+            "핑크 바코드",
+            "무료 바코드",
+            "유료 바코드",
+            "바코드 동기화",
+            "분만 병원",
+            "비분만 병원",
+            "온라인 상태",
+        ),
+    },
+    {
         "tokens": ("restart_detected", "재시작", "restart", "reboot"),
         "aliases": ("재시작", "재부팅", "restart", "reboot", "멈춤", "비정상 재부팅"),
     },
@@ -149,6 +167,21 @@ _NOTION_PLAYBOOK_TOPIC_RULES = (
         "titles": (
             "마미박스 초음파 이미지 캡처 불가",
             "초음파 영상 확인",
+        ),
+    },
+    {
+        "tokens": (
+            "핑크 바코드",
+            "무료 바코드",
+            "유료 바코드",
+            "바코드 동기화",
+            "cfg1_barcode_sync_date",
+            "분만 병원",
+            "비분만 병원",
+            "동기화",
+        ),
+        "titles": (
+            "바코드 동기화: 분만 병원에서 핑크 바코드가 스캔되는 경우",
         ),
     },
     {
@@ -336,6 +369,59 @@ def _extract_notion_lookup_terms(text: str) -> list[str]:
     return [part for part in parts if len(part.strip()) >= 2]
 
 
+def _build_notion_preview_lines(lines: list[str] | None, query_text: str, *, max_lines: int = 8) -> list[str]:
+    query_terms = {
+        _normalize_notion_lookup_text(term)
+        for term in _extract_notion_lookup_terms(query_text)
+        if _normalize_notion_lookup_text(term)
+    }
+    scored: list[tuple[int, int, str]] = []
+    seen: set[str] = set()
+
+    for index, raw_line in enumerate(lines or []):
+        stripped = str(raw_line or "").strip()
+        if not stripped:
+            continue
+        normalized = _normalize_notion_lookup_text(stripped)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+
+        score = 0
+        if ":" in stripped:
+            score += 4
+        if stripped.startswith("- "):
+            score += 2
+        if stripped.startswith("#"):
+            score -= 2
+        if len(stripped) <= 18 and ":" not in stripped:
+            score -= 2
+        if any(term and term in normalized for term in query_terms):
+            score += 7
+        if any(
+            token in stripped
+            for token in (
+                "정책:",
+                "전제:",
+                "확인 포인트:",
+                "운영 기준",
+                "재부팅",
+                "재시작",
+                "동기화",
+                "원인",
+                "조치",
+                "실제 사례",
+            )
+        ):
+            score += 4
+
+        scored.append((score, index, stripped[:160]))
+
+    scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    selected = [line for _, _, line in scored[: max(1, max_lines)]]
+    return selected
+
+
 def _parse_notion_rag_index_line(text: str) -> dict[str, Any] | None:
     matched = _RAG_INDEX_LINE_PATTERN.match((text or "").strip())
     if not matched:
@@ -414,8 +500,20 @@ def _load_notion_rag_index(root_page_id: str) -> list[dict[str, Any]]:
         if entry is not None:
             entries.append(entry)
 
-    if not entries:
-        entries = _build_fallback_notion_rag_index(normalized_root_id)
+    fallback_entries = _build_fallback_notion_rag_index(normalized_root_id)
+    seen_page_ids = {
+        _normalize_notion_id(str(entry.get("pageId") or ""))
+        for entry in entries
+        if isinstance(entry, dict) and str(entry.get("pageId") or "").strip()
+    }
+    for entry in fallback_entries:
+        if not isinstance(entry, dict):
+            continue
+        page_id = _normalize_notion_id(str(entry.get("pageId") or ""))
+        if page_id in seen_page_ids:
+            continue
+        seen_page_ids.add(page_id)
+        entries.append(entry)
 
     _NOTION_INDEX_CACHE.update(
         {
@@ -664,14 +762,11 @@ def _select_notion_playbooks(
             continue
         seen_page_ids.add(page_id)
         page_content = _load_notion_page_content_cached(page_id)
-        preview_lines = []
-        for line in page_content.get("lines") or []:
-            stripped = str(line or "").strip()
-            if not stripped:
-                continue
-            preview_lines.append(stripped[:160])
-            if len(preview_lines) >= 8:
-                break
+        preview_lines = _build_notion_preview_lines(
+            page_content.get("lines") or [],
+            query_text,
+            max_lines=8,
+        )
         selected.append(
             {
                 "pageId": page_id,

@@ -156,6 +156,20 @@ _COMPANY_NOTION_DOCS: tuple[dict[str, Any], ...] = (
         "keywords": ("바코드", "스캐너", "스캔", "작동 문제", "barcode"),
     },
     {
+        "title": "바코드 동기화: 분만 병원에서 핑크 바코드가 스캔되는 경우",
+        "url": "https://www.notion.so/321cf826870c8148a737da20a4bdf07f",
+        "keywords": (
+            "바코드 동기화",
+            "핑크 바코드",
+            "무료 바코드",
+            "유료 바코드",
+            "분만 병원",
+            "비분만 병원",
+            "온라인 상태",
+            "cfg1_barcode_sync_date",
+        ),
+    },
+    {
         "title": "캡쳐 스위치 문제",
         "url": "https://www.notion.so/6ae05f235f114801bf88bcc761c44dc3?pvs=21",
         "keywords": ("캡쳐 스위치", "캡처 스위치", "스위치", "버튼"),
