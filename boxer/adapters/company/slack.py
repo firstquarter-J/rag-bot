@@ -1087,6 +1087,9 @@ def create_app() -> App:
                 if bullet in normalized_fallback and bullet not in normalized_synth:
                     return True
 
+            if "캡처보드" in normalized_fallback and "캡처보드" not in normalized_synth:
+                return True
+
             return False
 
         def _reply_with_retrieval_synthesis(
@@ -1354,9 +1357,9 @@ def create_app() -> App:
                 impact_line = "• 영향: 종료 처리가 끝나지 않아 정상 녹화 실패로 봐야 해"
             elif recordings_on_date_count <= 0 and (is_ffmpeg_error or is_recording_stalled or diagnostic_severity == "high"):
                 if is_recording_stalled and is_ffmpeg_error:
-                    cause_line = "• 핵심 원인: 녹화 중 파일 증가율 저하(stall)와 ffmpeg 종료가 함께 확인됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
+                    cause_line = "• 핵심 원인: 녹화 중 파일 증가율 저하(stall)와 ffmpeg 종료가 함께 확인됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해. 캡처보드 이상 또는 캡처보드 연결 불량을 우선 의심해"
                 elif is_recording_stalled:
-                    cause_line = "• 핵심 원인: 녹화 중 파일 증가율 저하(stall)가 반복됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
+                    cause_line = "• 핵심 원인: 녹화 중 파일 증가율 저하(stall)가 반복됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해. 캡처보드 이상 또는 캡처보드 연결 불량을 우선 의심해"
                 else:
                     cause_line = f"• 핵심 원인: {router_cause_hint}"
                 impact_line = f"• 영향: 날짜 기준 DB 영상 기록이 `{recordings_on_date_count}개`라 녹화 파일 저장/업로드가 실패한 상태야"
@@ -1389,7 +1392,7 @@ def create_app() -> App:
             action_lines: list[str] = []
             if restart_detected:
                 action_lines.append("전원 차단/전원 버튼 오입력 여부 확인")
-            if is_ffmpeg_timestamp_error or is_standby_ffmpeg_error or is_ffmpeg_error:
+            if is_recording_stalled or is_ffmpeg_timestamp_error or is_standby_ffmpeg_error or is_ffmpeg_error:
                 action_lines.append("캡처보드 연결 상태와 입력 신호 점검")
             if is_recording_stalled:
                 action_lines.append("저장 경로 쓰기 상태와 파일 증가율 저하 원인 확인")
@@ -1562,6 +1565,8 @@ def create_app() -> App:
                 if "녹화 & 업로드 실패" not in normalized:
                     return True
                 if not any(token in normalized for token in ("ffmpeg", "SIGTERM", "sigterm", "stall", "캡처보드", "영상 입력")):
+                    return True
+                if "recording_stalled" in tags and "캡처보드" not in normalized:
                     return True
 
             representative = session.get("representativeErrorGroup")

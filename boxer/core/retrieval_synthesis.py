@@ -239,7 +239,8 @@ def _build_route_specific_rules(evidence_payload: Any) -> str:
             "16) Endpoint/Uploader/JWT/getaddrinfo EAI_AGAIN 계열만 있으면 녹화 실패 원인으로 단정하지 말고 통신/업로드 이상으로 설명해.\n"
             "17) evidence에 DB 영상 기록이 있으면 업로드 최종 성공 근거로 같이 해석해.\n"
             "18) evidence에 날짜 기준 DB 영상 기록이 없고 ffmpeg 오류나 stalled 신호가 있으면 `녹화 & 업로드 실패로 판단`이라고 적어.\n"
-            "19) 8줄 안팎으로 짧게 끝내. 장황한 설명 금지."
+            "19) stalled 신호가 반복되고 날짜 기준 DB 영상 기록이 없으면 캡처보드 이상 또는 캡처보드 연결 불량을 우선 의심한다고 적어.\n"
+            "20) 8줄 안팎으로 짧게 끝내. 장황한 설명 금지."
         )
     if route == "barcode_log_error_summary":
         return (
@@ -267,6 +268,7 @@ def _build_route_specific_rules(evidence_payload: Any) -> str:
             "21) 위 통신 오류만 있고 종료 스캔/녹화 흐름이 정상이라면, 녹화 실패가 아니라 상태 전송/스크린샷/업로드 통신 오류로 설명해.\n"
             "22) evidence에 날짜 기준 DB 영상 기록(recordingsOnDateCount)이 있으면 반드시 같이 해석해. DB 영상 기록이 있으면 업로드 최종 성공 근거로 보고, 없으면 업로드 실패 가능성을 언급해.\n"
             "23) 날짜 기준 DB 영상 기록이 없고 stalled/ffmpeg 오류가 함께 있으면 `녹화 & 업로드 실패로 판단`이라고 적어.\n"
+            "24) stalled 신호가 반복되고 날짜 기준 DB 영상 기록이 없으면 캡처보드 이상 또는 캡처보드 연결 불량을 우선 의심한다고 적어.\n"
         )
     if route == "barcode_log_error_summary_session":
         return (
@@ -285,9 +287,10 @@ def _build_route_specific_rules(evidence_payload: Any) -> str:
             "14) `startRecording() FFmpeg error encountered`, `generateThumbnail ffmpeg failed`, `ffmpeg was killed with signal SIGTERM`, `recording may be stalled` 같은 Recorder/FFmpeg 종료 신호는 app 계열 오류보다 우선 원인으로 해석해.\n"
             "15) 날짜 기준 DB 영상 기록이 없고 Recorder/FFmpeg SIGTERM, stalled, firstFfmpegError가 있으면 `녹화 & 업로드 실패로 판단`이라고 써.\n"
             "16) ffmpeg timestamp/DTS/PTS/invalid dropping 계열이면 캡처보드 연결 불량 또는 캡처보드 고장을 우선 의심한다고 적어.\n"
-            "17) Endpoint/Uploader/JWT/getaddrinfo EAI_AGAIN 계열만 있으면 녹화 실패 원인으로 단정하지 말고 통신/업로드 이상으로 설명해.\n"
-            "18) 조치는 한 줄에 `/`로 이어서 최대 3개만 적어.\n"
-            "19) 4줄로 끝내. 장황한 설명 금지."
+            "17) stalled 신호가 반복되고 날짜 기준 DB 영상 기록이 없으면 캡처보드 이상 또는 캡처보드 연결 불량을 우선 의심한다고 적어.\n"
+            "18) Endpoint/Uploader/JWT/getaddrinfo EAI_AGAIN 계열만 있으면 녹화 실패 원인으로 단정하지 말고 통신/업로드 이상으로 설명해.\n"
+            "19) 조치는 한 줄에 `/`로 이어서 최대 3개만 적어.\n"
+            "20) 4줄로 끝내. 장황한 설명 금지."
         )
     if route == "notion_playbook_qa":
         return (

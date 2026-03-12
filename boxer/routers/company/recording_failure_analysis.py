@@ -756,9 +756,9 @@ def _build_cause_line(record: dict[str, Any]) -> str:
         return "세션 중 장비 재시작이 확인돼 정상 녹화 실패로 판단해"
     if recordings_on_date_count <= 0 and ("ffmpeg_error" in tags or has_stall or "finish_anomaly" in tags):
         if has_stall and "ffmpeg_error" in tags:
-            return "녹화 중 파일 증가율 저하(stall)와 ffmpeg 종료가 함께 확인됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
+            return "녹화 중 파일 증가율 저하(stall)와 ffmpeg 종료가 함께 확인됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해. 캡처보드 이상 또는 캡처보드 연결 불량을 우선 의심해"
         if has_stall:
-            return "녹화 중 파일 증가율 저하(stall)가 반복됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
+            return "녹화 중 파일 증가율 저하(stall)가 반복됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해. 캡처보드 이상 또는 캡처보드 연결 불량을 우선 의심해"
         if has_ffmpeg_sigterm:
             return "ffmpeg가 SIGTERM으로 종료됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
         return "ffmpeg 오류가 확인됐고 날짜 기준 DB 영상 기록이 없어 녹화 & 업로드 실패로 판단해"
@@ -842,10 +842,10 @@ def _build_operational_evidence_lines(record: dict[str, Any]) -> list[str]:
 def _build_action_lines(record: dict[str, Any]) -> list[str]:
     tags = set(record.get("classificationTags") or [])
     actions: list[str] = []
+    if "recording_stalled" in tags or "ffmpeg_timestamp_error" in tags or "ffmpeg_error" in tags or "device_busy" in tags:
+        actions.append("- 캡처보드 케이블 체결 상태와 입력 신호를 가장 먼저 점검")
     if "recording_stalled" in tags:
         actions.append("- 장비 저장 경로 쓰기 상태와 파일 증가율 저하 원인을 먼저 확인")
-    if "ffmpeg_timestamp_error" in tags or "ffmpeg_error" in tags or "device_busy" in tags:
-        actions.append("- 캡처보드 케이블 체결 상태와 입력 신호를 가장 먼저 점검")
     if "restart_detected" in tags:
         actions.append("- 전원 차단/전원 버튼 오입력 여부 확인")
     if "upload_network_error" in tags or "status_network_error" in tags:
