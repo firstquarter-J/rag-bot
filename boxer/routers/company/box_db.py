@@ -539,28 +539,21 @@ def _query_baby_ai_list_by_barcode(barcode: str, target_date: str | None = None)
 
     for index, row in enumerate(rows, start=1):
         created_at_label = _format_recorded_at_local(row.get("createdAt"))
-        webhook_sent_at_label = (
-            _format_recorded_at_local(row.get("webhookSentAt"))
-            if row.get("webhookSentAt")
-            else "미전송"
-        )
         hospital_name = _display_value(row.get("hospitalName"), default="미확인")
         room_name = _display_value(row.get("roomName"), default="미확인")
         device_name = _display_value(row.get("deviceName"), default="미확인")
-        file_id = _display_value(row.get("fileId"), default="미확인")
-        capture_seq = _display_value(row.get("captureSeq"), default="미확인")
-        recording_seq = _display_value(row.get("recordingSeq"), default="없음")
-        visible_flag = "Y" if int(row.get("visibleFlag") or 0) == 1 else "N"
-        billable_visible_flag = "Y" if int(row.get("billableVisibleFlag") or 0) == 1 else "N"
+        visible_flag = "공개" if int(row.get("visibleFlag") or 0) == 1 else "비공개"
         regeneration_reason = _display_value(row.get("regenerationReason"), default="없음")
         baby_magic_url = _build_baby_magic_cdn_url(row.get("babyMagicImageS3FileKey"))
         baby_magic_link = f"<{baby_magic_url}|열기>" if baby_magic_url else "없음"
+        webhook_sent_at = row.get("webhookSentAt")
+        webhook_status = "미전송"
+        if webhook_sent_at:
+            webhook_status = f"성공 (`{_format_recorded_at_local(webhook_sent_at)}`)"
         lines.extend(
             [
                 f"- {index}. createdAt(KST): `{created_at_label}` | 병원: `{hospital_name}` | 병실: `{room_name}` | 장비: `{device_name}`",
-                f"  seq/captureSeq/recordingSeq: `{_display_value(row.get('seq'))}` / `{capture_seq}` / `{recording_seq}`",
-                f"  fileId: `{file_id}`",
-                f"  visible/billableVisible: `{visible_flag}` / `{billable_visible_flag}` | webhookSentAt(KST): `{webhook_sent_at_label}`",
+                f"  공개 상태: `{visible_flag}` | 앱 발송: {webhook_status}",
                 f"  결과 링크: {baby_magic_link}",
                 f"  regenerationReason: `{regeneration_reason}`",
                 "",

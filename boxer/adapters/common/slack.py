@@ -68,13 +68,23 @@ def create_slack_app(
 
         def reply(reply_text: str, *, mention_user: bool = True) -> None:
             if mention_user:
-                say(text=_format_reply_text(user_id, reply_text), thread_ts=thread_ts)
+                say(
+                    text=_format_reply_text(user_id, reply_text),
+                    thread_ts=thread_ts,
+                    unfurl_links=False,
+                    unfurl_media=False,
+                )
                 return
 
             clean_text = (reply_text or "").strip()
             if not clean_text:
                 clean_text = "응답 내용이 비어 있어"
-            say(text=clean_text, thread_ts=thread_ts)
+            say(
+                text=clean_text,
+                thread_ts=thread_ts,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
 
         mention_handler(payload, reply, client, logger)
 
@@ -110,9 +120,18 @@ def create_slack_app(
             if not clean_text:
                 clean_text = "응답 내용이 비어 있어"
             if thread:
-                say(text=clean_text, thread_ts=thread_ts)
+                say(
+                    text=clean_text,
+                    thread_ts=thread_ts,
+                    unfurl_links=False,
+                    unfurl_media=False,
+                )
                 return
-            say(text=clean_text)
+            say(
+                text=clean_text,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
 
         message_handler(payload, reply, client, logger)
 
