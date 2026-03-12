@@ -307,6 +307,18 @@ def _context_limit() -> int:
     return max(1, min(200, cs.RECORDINGS_CONTEXT_LIMIT))
 
 
+def _baby_ai_context_limit() -> int:
+    return max(1, min(5, int(s.DB_QUERY_MAX_ROWS or 20)))
+
+
+def _build_baby_magic_cdn_url(s3_file_key: object) -> str:
+    base_url = (cs.BABY_MAGIC_CDN_BASE_URL or "").strip().rstrip("/")
+    file_key = str(s3_file_key or "").strip().lstrip("/")
+    if not base_url or not file_key:
+        return ""
+    return f"{base_url}/{file_key}"
+
+
 def _load_recordings_context_by_barcode(barcode: str) -> dict[str, Any]:
     if not s.DB_HOST or not s.DB_USERNAME or not s.DB_PASSWORD or not s.DB_DATABASE:
         raise RuntimeError("DB 접속 정보(DB_*)가 비어 있어")
@@ -430,6 +442,136 @@ def _query_recordings_list_by_barcode(
 
     if has_more:
         lines.append(f"• 참고: 최근 `{limit}개`만 표시했고 이전 영상은 생략했어")
+
+    return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
+
+
+def _query_baby_ai_list_by_barcode(barcode: str, target_date: str | None = None) -> str:
+    if not s.DB_HOST or not s.DB_USERNAME or not s.DB_PASSWORD or not s.DB_DATABASE:
+        raise RuntimeError("DB 접속 정보(DB_*)가 비어 있어")
+
+    limit = _baby_ai_context_limit()
+    summary_conditions = [
+        "barcode = %s",
+        "deletedAt IS NULL",
+        "COALESCE(babyMagicImageS3FileKey, '') <> ''",
+    ]
+    row_conditions = [
+        "ba.barcode = %s",
+        "ba.deletedAt IS NULL",
+        "COALESCE(ba.babyMagicImageS3FileKey, '') <> ''",
+    ]
+    summary_params: list[Any] = [barcode]
+    row_params: list[Any] = [barcode]
+
+    if target_date:
+        utc_start, utc_end = _local_date_to_utc_range(target_date)
+        summary_conditions.extend(["createdAt >= %s", "createdAt < %s"])
+        row_conditions.extend(["ba.createdAt >= %s", "ba.createdAt < %s"])
+        summary_params.extend([utc_start, utc_end])
+        row_params.extend([utc_start, utc_end])
+
+    connection = _create_db_connection(s.DB_QUERY_TIMEOUT_SEC)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS babyAiCount, "
+                "MIN(createdAt) AS firstCreatedAt, "
+                "MAX(createdAt) AS lastCreatedAt "
+                "FROM baby_ai "
+                f"WHERE {' AND '.join(summary_conditions)}",
+                tuple(summary_params),
+            )
+            summary = cursor.fetchone() or {}
+
+            row_params_with_limit = row_params + [limit]
+            cursor.execute(
+                "SELECT "
+                "ba.seq, "
+                "ba.captureSeq, "
+                "ba.recordingSeq, "
+                "ba.fileId, "
+                "ba.babyMagicImageS3FileKey, "
+                "ba.visibleFlag, "
+                "ba.billableVisibleFlag, "
+                "ba.regenerationReason, "
+                "ba.createdAt, "
+                "ba.webhookSentAt, "
+                "h.hospitalName AS hospitalName, "
+                "hr.roomName AS roomName, "
+                "d.deviceName AS deviceName "
+                "FROM baby_ai ba "
+                "LEFT JOIN hospitals h ON ba.hospitalSeq = h.seq "
+                "LEFT JOIN hospital_rooms hr ON ba.hospitalRoomSeq = hr.seq "
+                "LEFT JOIN devices d ON ba.deviceSeq = d.seq "
+                f"WHERE {' AND '.join(row_conditions)} "
+                "ORDER BY ba.createdAt DESC, ba.seq DESC "
+                "LIMIT %s",
+                tuple(row_params_with_limit),
+            )
+            rows = cursor.fetchall() or []
+    finally:
+        connection.close()
+
+    total_rows = int(summary.get("babyAiCount") or 0)
+    has_more = total_rows > len(rows)
+
+    if total_rows <= 0 or not rows:
+        result_line = "• 결과: 베이비매직 기록이 없어"
+        if target_date:
+            result_line = f"• 결과: `{target_date}` createdAt(KST) 기준 베이비매직 기록이 없어"
+        return (
+            "*바코드 베이비매직 목록 조회 결과*\n"
+            f"• 바코드: `{barcode}`\n"
+            + result_line
+        )
+
+    lines = [
+        "*바코드 베이비매직 목록 조회 결과*",
+        f"• 바코드: `{barcode}`",
+        f"• baby_ai row 수: *{total_rows}개*",
+    ]
+    if target_date:
+        lines.append(f"• createdAt 날짜(KST): `{target_date}`")
+    lines.append(
+        "• 베이비매직 목록(최근순):",
+    )
+
+    for index, row in enumerate(rows, start=1):
+        created_at_label = _format_recorded_at_local(row.get("createdAt"))
+        webhook_sent_at_label = (
+            _format_recorded_at_local(row.get("webhookSentAt"))
+            if row.get("webhookSentAt")
+            else "미전송"
+        )
+        hospital_name = _display_value(row.get("hospitalName"), default="미확인")
+        room_name = _display_value(row.get("roomName"), default="미확인")
+        device_name = _display_value(row.get("deviceName"), default="미확인")
+        file_id = _display_value(row.get("fileId"), default="미확인")
+        capture_seq = _display_value(row.get("captureSeq"), default="미확인")
+        recording_seq = _display_value(row.get("recordingSeq"), default="없음")
+        visible_flag = "Y" if int(row.get("visibleFlag") or 0) == 1 else "N"
+        billable_visible_flag = "Y" if int(row.get("billableVisibleFlag") or 0) == 1 else "N"
+        regeneration_reason = _display_value(row.get("regenerationReason"), default="없음")
+        baby_magic_url = _build_baby_magic_cdn_url(row.get("babyMagicImageS3FileKey"))
+        baby_magic_link = f"<{baby_magic_url}|열기>" if baby_magic_url else "없음"
+        lines.extend(
+            [
+                f"- {index}. createdAt(KST): `{created_at_label}` | 병원: `{hospital_name}` | 병실: `{room_name}` | 장비: `{device_name}`",
+                f"  seq/captureSeq/recordingSeq: `{_display_value(row.get('seq'))}` / `{capture_seq}` / `{recording_seq}`",
+                f"  fileId: `{file_id}`",
+                f"  visible/billableVisible: `{visible_flag}` / `{billable_visible_flag}` | webhookSentAt(KST): `{webhook_sent_at_label}`",
+                f"  결과 링크: {baby_magic_link}",
+                f"  regenerationReason: `{regeneration_reason}`",
+                "",
+            ]
+        )
+
+    if lines and lines[-1] == "":
+        lines.pop()
+
+    if has_more:
+        lines.append(f"• 참고: 최근 `{limit}개`만 표시했고 이전 베이비매직은 생략했어")
 
     return _truncate_text("\n".join(lines), max(1, s.DB_QUERY_MAX_RESULT_CHARS))
 

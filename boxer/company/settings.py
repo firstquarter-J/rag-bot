@@ -98,6 +98,10 @@ DEVICE_FILE_DOWNLOAD_PREFIX = os.getenv("DEVICE_FILE_DOWNLOAD_PREFIX", "temp").s
 DEVICE_FILE_DOWNLOAD_PRESIGNED_EXPIRES_SEC = int(
     os.getenv("DEVICE_FILE_DOWNLOAD_PRESIGNED_EXPIRES_SEC", "3600")
 )
+BABY_MAGIC_CDN_BASE_URL = os.getenv(
+    "BABY_MAGIC_CDN_BASE_URL",
+    "https://cdn-kr.mmtalkbox.com/",
+).strip().rstrip("/")
 
 MOMMYBOX_REFERENCE_ROOT = os.getenv(
     "MOMMYBOX_REFERENCE_ROOT",

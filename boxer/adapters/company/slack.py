@@ -40,6 +40,8 @@ from boxer.routers.company.barcode_log import (
     _extract_log_date_with_presence,
     _extract_year_filter,
     _is_barcode_all_recorded_dates_request,
+    _is_barcode_baby_ai_list_request,
+    _is_baby_ai_list_request_without_barcode,
     _is_barcode_video_info_request,
     _is_barcode_log_analysis_request,
     _is_barcode_last_recorded_at_request,
@@ -89,6 +91,7 @@ from boxer.routers.company.box_db import (
     _lookup_device_contexts_by_hospital_room,
     _query_devices_by_filters,
     _query_all_recorded_dates_by_barcode,
+    _query_baby_ai_list_by_barcode,
     _query_hospitals_by_filters,
     _query_hospital_rooms_by_filters,
     _query_last_recorded_at_by_barcode,
@@ -2655,6 +2658,39 @@ def create_app() -> App:
             except Exception:
                 logger.exception("Barcode video count query failed")
                 reply("영상 개수 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
+            return
+
+        if _is_baby_ai_list_request_without_barcode(question, barcode):
+            reply("베이비매직 조회는 바코드가 필요해. 예: `12345678910 베이비매직 목록`")
+            logger.info(
+                "Responded with baby_ai barcode guidance in thread_ts=%s question=%s",
+                thread_ts,
+                question,
+            )
+            return
+
+        if _is_barcode_baby_ai_list_request(question, barcode):
+            try:
+                target_date, has_requested_date = _extract_log_date_with_presence(question)
+                result_text = _query_baby_ai_list_by_barcode(
+                    barcode or "",
+                    target_date if has_requested_date else None,
+                )
+                reply(result_text)
+                logger.info(
+                    "Responded with barcode baby_ai list in thread_ts=%s barcode=%s has_date=%s",
+                    thread_ts,
+                    barcode,
+                    has_requested_date,
+                )
+            except ValueError as exc:
+                reply(f"베이비매직 목록 조회 요청 형식 오류: {exc}")
+            except (pymysql.MySQLError, RuntimeError):
+                logger.exception("Barcode baby_ai list query failed")
+                reply("베이비매직 목록 조회 중 오류가 발생했어. DB 연결 정보와 네트워크 상태를 확인해줘")
+            except Exception:
+                logger.exception("Barcode baby_ai list query failed")
+                reply("베이비매직 목록 조회 중 오류가 발생했어. 잠시 후 다시 시도해줘")
             return
 
         if _is_barcode_video_info_request(question, barcode):

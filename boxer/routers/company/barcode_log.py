@@ -85,6 +85,7 @@ _TODAY_HINTS = ("오늘", "금일", "today")
 _DAY_BEFORE_YESTERDAY_HINTS = ("그제", "엊그제", "day before yesterday")
 _TOMORROW_HINTS = ("내일", "tomorrow")
 _CAPTURE_HINT_TOKENS = ("캡처", "capture", "captures", "capturedat", "스냅샷", "snapshot")
+_BABY_AI_HINT_TOKENS = ("베이비매직", "babymagic", "baby magic", "baby_ai", "baby ai")
 _HOSPITAL_QUERY_HINT_TOKENS = (
     "병원 조회",
     "병원 목록",
@@ -617,6 +618,40 @@ def _is_barcode_video_info_request(question: str, barcode: str | None) -> bool:
         return False
 
     return any(token in text for token in ("정보", "상세", "상세정보", "세부", "상태"))
+
+
+def _is_barcode_baby_ai_list_request(question: str, barcode: str | None) -> bool:
+    if not barcode:
+        return False
+
+    text = (question or "").strip()
+    lowered = text.lower()
+    has_baby_ai_hint = any(token in text for token in _BABY_AI_HINT_TOKENS) or any(
+        token in lowered for token in _BABY_AI_HINT_TOKENS
+    )
+    if not has_baby_ai_hint:
+        return False
+
+    return any(token in text for token in ("목록", "리스트", "조회")) or any(
+        token in lowered for token in ("list", "items")
+    )
+
+
+def _is_baby_ai_list_request_without_barcode(question: str, barcode: str | None) -> bool:
+    if barcode:
+        return False
+
+    text = (question or "").strip()
+    lowered = text.lower()
+    has_baby_ai_hint = any(token in text for token in _BABY_AI_HINT_TOKENS) or any(
+        token in lowered for token in _BABY_AI_HINT_TOKENS
+    )
+    if not has_baby_ai_hint:
+        return False
+
+    return any(token in text for token in ("목록", "리스트", "조회")) or any(
+        token in lowered for token in ("list", "items")
+    )
 
 
 def _is_barcode_video_length_request(question: str, barcode: str | None) -> bool:
