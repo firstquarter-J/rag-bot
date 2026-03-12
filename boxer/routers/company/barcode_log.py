@@ -784,10 +784,11 @@ def _extract_device_seq_filter(question: str) -> int | None:
 
 
 def _extract_device_name_scope(question: str) -> str | None:
-    text = str(question or "").strip()
-    matched = _DEVICE_NAME_SCOPE_PATTERN.search(text)
+    text = re.sub(r"<@[^>]+>", " ", str(question or "")).strip()
+    sanitized_text = re.sub(r"[`'\"“”‘’]+", "", text)
+    matched = _DEVICE_NAME_SCOPE_PATTERN.search(sanitized_text)
     if not matched:
-        matched = _LEADING_DEVICE_NAME_SCOPE_PATTERN.search(text)
+        matched = _LEADING_DEVICE_NAME_SCOPE_PATTERN.search(sanitized_text)
     if not matched:
         return None
 
