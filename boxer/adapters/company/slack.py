@@ -1729,7 +1729,7 @@ def create_app() -> App:
                         system_prompt=cs.SYSTEM_PROMPT or None,
                         extra_rules=_build_company_retrieval_rules(session_payload),
                         evidence_transform=_transform_company_retrieval_payload,
-                        max_tokens=s.BARCODE_LOG_ERROR_SUMMARY_MAX_TOKENS,
+                        max_tokens=cs.BARCODE_LOG_ERROR_SUMMARY_MAX_TOKENS,
                     )
                     final_section = synthesized_text or fallback_section
                     if _needs_barcode_log_error_summary_session_fallback(final_section, session_payload):
@@ -2009,7 +2009,7 @@ def create_app() -> App:
                 reply(_build_device_file_probe_config_message())
                 return
             if download_remote_files and (
-                not s.DEVICE_FILE_DOWNLOAD_BUCKET
+                not cs.DEVICE_FILE_DOWNLOAD_BUCKET
                 or not cs.MDA_GRAPHQL_URL
                 or not cs.MDA_ADMIN_USER_PASSWORD
                 or not cs.DEVICE_SSH_PASSWORD
@@ -2265,7 +2265,7 @@ def create_app() -> App:
                     fallback_text,
                     failure_evidence,
                     route_name="recording failure analysis",
-                    max_tokens=s.RECORDING_FAILURE_ANALYSIS_MAX_TOKENS,
+                    max_tokens=cs.RECORDING_FAILURE_ANALYSIS_MAX_TOKENS,
                 )
             except ValueError as exc:
                 reply(f"녹화 실패 원인 분석 요청 형식 오류: {exc}")

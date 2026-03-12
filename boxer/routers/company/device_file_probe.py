@@ -23,7 +23,6 @@ except ImportError:  # pragma: no cover - runtime guard
     requests = None
 
 from boxer.company import settings as cs
-from boxer.core import settings as s
 from boxer.core.utils import _display_value, _truncate_text
 from boxer.routers.company.barcode_log import (
     _build_phase2_scope_request_message,
@@ -410,7 +409,7 @@ def _find_device_files_by_file_id(
 
 
 def _build_device_download_s3_key(file_name: str) -> str:
-    prefix = (s.DEVICE_FILE_DOWNLOAD_PREFIX or "").strip().strip("/")
+    prefix = (cs.DEVICE_FILE_DOWNLOAD_PREFIX or "").strip().strip("/")
     if prefix:
         return f"{prefix}/{file_name}"
     return file_name
@@ -665,7 +664,7 @@ def _download_device_files_to_s3(
     port: int,
     remote_files: list[str],
 ) -> dict[str, Any]:
-    bucket = (s.DEVICE_FILE_DOWNLOAD_BUCKET or "").strip()
+    bucket = (cs.DEVICE_FILE_DOWNLOAD_BUCKET or "").strip()
     if not bucket:
         return {
             "ok": False,
@@ -708,7 +707,7 @@ def _download_device_files_to_s3(
                     presigned_url = s3_client.generate_presigned_url(
                         "get_object",
                         Params={"Bucket": bucket, "Key": key},
-                        ExpiresIn=max(60, s.DEVICE_FILE_DOWNLOAD_PRESIGNED_EXPIRES_SEC),
+                        ExpiresIn=max(60, cs.DEVICE_FILE_DOWNLOAD_PRESIGNED_EXPIRES_SEC),
                     )
                     downloads.append(
                         {

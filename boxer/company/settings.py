@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 from dotenv import load_dotenv
+from boxer.core import settings as core_settings
 
 load_dotenv()
 
@@ -88,6 +89,15 @@ else:
         for user_id in (HYUN_USER_ID, MARK_USER_ID)
         if user_id
     }
+
+DEVICE_FILE_DOWNLOAD_BUCKET = (
+    os.getenv("DEVICE_FILE_DOWNLOAD_BUCKET", "").strip()
+    or core_settings.S3_ULTRASOUND_BUCKET
+)
+DEVICE_FILE_DOWNLOAD_PREFIX = os.getenv("DEVICE_FILE_DOWNLOAD_PREFIX", "temp").strip().strip("/")
+DEVICE_FILE_DOWNLOAD_PRESIGNED_EXPIRES_SEC = int(
+    os.getenv("DEVICE_FILE_DOWNLOAD_PRESIGNED_EXPIRES_SEC", "3600")
+)
 
 MOMMYBOX_REFERENCE_ROOT = os.getenv(
     "MOMMYBOX_REFERENCE_ROOT",
@@ -175,5 +185,11 @@ LOG_SESSION_SAFETY_LINES = int(os.getenv("LOG_SESSION_SAFETY_LINES", "20"))
 LOG_POST_STOP_MAX_LINES = int(os.getenv("LOG_POST_STOP_MAX_LINES", "50"))
 LOG_PHASE1_MAX_DAYS = int(os.getenv("LOG_PHASE1_MAX_DAYS", "30"))
 RECORDINGS_CONTEXT_LIMIT = int(os.getenv("RECORDINGS_CONTEXT_LIMIT", "30"))
+BARCODE_LOG_ERROR_SUMMARY_MAX_TOKENS = int(
+    os.getenv("BARCODE_LOG_ERROR_SUMMARY_MAX_TOKENS", "1200")
+)
+RECORDING_FAILURE_ANALYSIS_MAX_TOKENS = int(
+    os.getenv("RECORDING_FAILURE_ANALYSIS_MAX_TOKENS", "1200")
+)
 
 SYSTEM_PROMPT = os.getenv("COMPANY_SYSTEM_PROMPT", "").strip()

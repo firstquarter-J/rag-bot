@@ -42,6 +42,7 @@
 - `boxer/company`
   - 회사 전용 설정/정책/패턴/프롬프트
   - 사용자 권한 ID, 바코드/로그 규칙, 회사용 시스템 프롬프트
+  - route별 token budget, 장비 파일 다운로드 설정 같은 회사 env 포함
 - `boxer/company/retrieval_rules.py`
   - 회사 전용 retrieval synthesis 규칙
   - route별 프롬프트 규칙과 evidence 축약 담당
@@ -300,6 +301,7 @@ chmod 600 .env
 
 - `.env.example`에는 키만 있고 실제 값은 넣지 않음
 - 실제 비밀값은 `.env`(로컬/EC2)에서만 관리
+- 공통 env는 `boxer/core/settings.py`, 회사 전용 env는 `boxer/company/settings.py` 기준으로 분리
 
 4. systemd 서비스 등록
 
