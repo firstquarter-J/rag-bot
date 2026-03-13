@@ -7,3 +7,8 @@ __pycache__/
 !.env.example
 AGENTS.md
 .omx/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*-wal
+data/*-shm

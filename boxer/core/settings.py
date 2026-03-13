@@ -1,9 +1,12 @@
 import os
 import re
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Phase 1 로컬 실행은 .env 기준
 # 운영 환경에서는 Secrets Manager 연동 예정
@@ -80,6 +83,48 @@ S3_QUERY_MAX_ITEMS = int(os.getenv("S3_QUERY_MAX_ITEMS", "20"))
 S3_QUERY_MAX_RESULT_CHARS = int(os.getenv("S3_QUERY_MAX_RESULT_CHARS", "3500"))
 S3_LOG_TAIL_BYTES = int(os.getenv("S3_LOG_TAIL_BYTES", "50000"))
 S3_LOG_TAIL_LINES = int(os.getenv("S3_LOG_TAIL_LINES", "80"))
+
+REQUEST_AUDIT_SQLITE_ENABLED = os.getenv(
+    "REQUEST_AUDIT_SQLITE_ENABLED",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
+REQUEST_AUDIT_SQLITE_PATH = os.getenv(
+    "REQUEST_AUDIT_SQLITE_PATH",
+    str(PROJECT_ROOT / "data" / "request_audit.db"),
+).strip()
+REQUEST_AUDIT_SQLITE_TIMEOUT_SEC = int(os.getenv("REQUEST_AUDIT_SQLITE_TIMEOUT_SEC", "5"))
+REQUEST_AUDIT_SQLITE_BUSY_TIMEOUT_MS = int(
+    os.getenv("REQUEST_AUDIT_SQLITE_BUSY_TIMEOUT_MS", "5000")
+)
+REQUEST_AUDIT_SQLITE_INIT_ON_STARTUP = os.getenv(
+    "REQUEST_AUDIT_SQLITE_INIT_ON_STARTUP",
+    "true",
+).lower() in {"1", "true", "yes", "on"}
+REQUEST_AUDIT_TIMEZONE = os.getenv("REQUEST_AUDIT_TIMEZONE", "Asia/Seoul").strip() or "Asia/Seoul"
+REQUEST_AUDIT_SQLITE_S3_BACKUP_ENABLED = os.getenv(
+    "REQUEST_AUDIT_SQLITE_S3_BACKUP_ENABLED",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
+REQUEST_AUDIT_SQLITE_S3_BACKUP_BUCKET = os.getenv(
+    "REQUEST_AUDIT_SQLITE_S3_BACKUP_BUCKET",
+    "",
+).strip()
+REQUEST_AUDIT_SQLITE_S3_BACKUP_PREFIX = os.getenv(
+    "REQUEST_AUDIT_SQLITE_S3_BACKUP_PREFIX",
+    "request-audit",
+).strip().strip("/")
+REQUEST_AUDIT_SQLITE_S3_STORAGE_CLASS = os.getenv(
+    "REQUEST_AUDIT_SQLITE_S3_STORAGE_CLASS",
+    "",
+).strip()
+REQUEST_AUDIT_SQLITE_S3_SERVER_SIDE_ENCRYPTION = os.getenv(
+    "REQUEST_AUDIT_SQLITE_S3_SERVER_SIDE_ENCRYPTION",
+    "",
+).strip()
+REQUEST_AUDIT_SQLITE_S3_RESTORE_ON_STARTUP = os.getenv(
+    "REQUEST_AUDIT_SQLITE_S3_RESTORE_ON_STARTUP",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
 
 DEFAULT_DB_QUERY = "SELECT NOW() AS now_time, DATABASE() AS db_name"
 

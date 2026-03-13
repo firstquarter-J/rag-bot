@@ -1,0 +1,466 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, TypedDict
+from zoneinfo import ZoneInfo
+
+from boxer.core import settings as s
+from boxer.routers.common.sqlite_store import (
+    _backup_sqlite_to_s3,
+    _connect_sqlite,
+    _restore_sqlite_from_s3,
+    _resolve_sqlite_path,
+)
+
+_REQUEST_AUDIT_TABLE_NAME = "request_audit_log"
+_REQUEST_AUDIT_SCHEMA_STATEMENTS = (
+    f"""
+    CREATE TABLE IF NOT EXISTS {_REQUEST_AUDIT_TABLE_NAME} (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        createdAtUtc TEXT NOT NULL,
+        createdAtLocal TEXT NOT NULL,
+        requestDateLocal TEXT NOT NULL,
+        sourcePlatform TEXT NOT NULL,
+        workspaceId TEXT NOT NULL DEFAULT '',
+        eventType TEXT NOT NULL,
+        routeName TEXT NOT NULL,
+        routeMode TEXT,
+        status TEXT NOT NULL,
+        userId TEXT NOT NULL,
+        channelId TEXT NOT NULL DEFAULT '',
+        threadId TEXT NOT NULL,
+        messageId TEXT NOT NULL,
+        isThreadRoot INTEGER NOT NULL DEFAULT 1,
+        permalink TEXT,
+        threadPermalink TEXT,
+        requestText TEXT NOT NULL,
+        normalizedQuestion TEXT,
+        requestKey TEXT,
+        subjectType TEXT,
+        subjectKey TEXT,
+        requestedDate TEXT,
+        replyCount INTEGER NOT NULL DEFAULT 0,
+        firstRepliedAtUtc TEXT,
+        firstRepliedAtLocal TEXT,
+        errorType TEXT,
+        metadataJson TEXT,
+        UNIQUE(sourcePlatform, channelId, messageId)
+    )
+    """,
+    f"""
+    CREATE INDEX IF NOT EXISTS idx_{_REQUEST_AUDIT_TABLE_NAME}_createdAtUtc
+    ON {_REQUEST_AUDIT_TABLE_NAME}(createdAtUtc)
+    """,
+    f"""
+    CREATE INDEX IF NOT EXISTS idx_{_REQUEST_AUDIT_TABLE_NAME}_requestDateLocal
+    ON {_REQUEST_AUDIT_TABLE_NAME}(requestDateLocal)
+    """,
+    f"""
+    CREATE INDEX IF NOT EXISTS idx_{_REQUEST_AUDIT_TABLE_NAME}_userId_createdAtUtc
+    ON {_REQUEST_AUDIT_TABLE_NAME}(userId, createdAtUtc)
+    """,
+    f"""
+    CREATE INDEX IF NOT EXISTS idx_{_REQUEST_AUDIT_TABLE_NAME}_routeName_createdAtUtc
+    ON {_REQUEST_AUDIT_TABLE_NAME}(routeName, createdAtUtc)
+    """,
+    f"""
+    CREATE INDEX IF NOT EXISTS idx_{_REQUEST_AUDIT_TABLE_NAME}_threadId
+    ON {_REQUEST_AUDIT_TABLE_NAME}(sourcePlatform, channelId, threadId)
+    """,
+)
+
+_REQUEST_AUDIT_UPSERT_SQL = f"""
+INSERT INTO {_REQUEST_AUDIT_TABLE_NAME} (
+    createdAtUtc,
+    createdAtLocal,
+    requestDateLocal,
+    sourcePlatform,
+    workspaceId,
+    eventType,
+    routeName,
+    routeMode,
+    status,
+    userId,
+    channelId,
+    threadId,
+    messageId,
+    isThreadRoot,
+    permalink,
+    threadPermalink,
+    requestText,
+    normalizedQuestion,
+    requestKey,
+    subjectType,
+    subjectKey,
+    requestedDate,
+    replyCount,
+    firstRepliedAtUtc,
+    firstRepliedAtLocal,
+    errorType,
+    metadataJson
+) VALUES (
+    :createdAtUtc,
+    :createdAtLocal,
+    :requestDateLocal,
+    :sourcePlatform,
+    :workspaceId,
+    :eventType,
+    :routeName,
+    :routeMode,
+    :status,
+    :userId,
+    :channelId,
+    :threadId,
+    :messageId,
+    :isThreadRoot,
+    :permalink,
+    :threadPermalink,
+    :requestText,
+    :normalizedQuestion,
+    :requestKey,
+    :subjectType,
+    :subjectKey,
+    :requestedDate,
+    :replyCount,
+    :firstRepliedAtUtc,
+    :firstRepliedAtLocal,
+    :errorType,
+    :metadataJson
+)
+ON CONFLICT(sourcePlatform, channelId, messageId) DO UPDATE SET
+    routeName = CASE
+        WHEN excluded.routeName = 'unknown' THEN {_REQUEST_AUDIT_TABLE_NAME}.routeName
+        ELSE excluded.routeName
+    END,
+    routeMode = COALESCE(excluded.routeMode, {_REQUEST_AUDIT_TABLE_NAME}.routeMode),
+    status = excluded.status,
+    permalink = COALESCE(excluded.permalink, {_REQUEST_AUDIT_TABLE_NAME}.permalink),
+    threadPermalink = COALESCE(excluded.threadPermalink, {_REQUEST_AUDIT_TABLE_NAME}.threadPermalink),
+    normalizedQuestion = COALESCE(
+        excluded.normalizedQuestion,
+        {_REQUEST_AUDIT_TABLE_NAME}.normalizedQuestion
+    ),
+    requestKey = COALESCE(excluded.requestKey, {_REQUEST_AUDIT_TABLE_NAME}.requestKey),
+    subjectType = COALESCE(excluded.subjectType, {_REQUEST_AUDIT_TABLE_NAME}.subjectType),
+    subjectKey = COALESCE(excluded.subjectKey, {_REQUEST_AUDIT_TABLE_NAME}.subjectKey),
+    requestedDate = COALESCE(excluded.requestedDate, {_REQUEST_AUDIT_TABLE_NAME}.requestedDate),
+    replyCount = MAX({_REQUEST_AUDIT_TABLE_NAME}.replyCount, excluded.replyCount),
+    firstRepliedAtUtc = COALESCE(
+        {_REQUEST_AUDIT_TABLE_NAME}.firstRepliedAtUtc,
+        excluded.firstRepliedAtUtc
+    ),
+    firstRepliedAtLocal = COALESCE(
+        {_REQUEST_AUDIT_TABLE_NAME}.firstRepliedAtLocal,
+        excluded.firstRepliedAtLocal
+    ),
+    errorType = COALESCE(excluded.errorType, {_REQUEST_AUDIT_TABLE_NAME}.errorType),
+    metadataJson = COALESCE(excluded.metadataJson, {_REQUEST_AUDIT_TABLE_NAME}.metadataJson)
+"""
+
+
+class RequestAuditRecord(TypedDict, total=False):
+    createdAtUtc: str | datetime
+    sourcePlatform: str
+    workspaceId: str
+    eventType: str
+    routeName: str
+    routeMode: str | None
+    status: str
+    userId: str
+    channelId: str
+    threadId: str
+    messageId: str
+    isThreadRoot: bool | int
+    permalink: str | None
+    threadPermalink: str | None
+    requestText: str
+    normalizedQuestion: str | None
+    requestKey: str | None
+    subjectType: str | None
+    subjectKey: str | None
+    requestedDate: str | None
+    replyCount: int
+    firstRepliedAtUtc: str | datetime | None
+    errorType: str | None
+    metadata: dict[str, Any] | list[Any] | str | None
+    metadataJson: str | None
+
+
+def _request_audit_timezone() -> ZoneInfo:
+    try:
+        return ZoneInfo(s.REQUEST_AUDIT_TIMEZONE)
+    except Exception as exc:
+        raise RuntimeError(
+            f"REQUEST_AUDIT_TIMEZONE 설정이 올바르지 않아: {s.REQUEST_AUDIT_TIMEZONE}"
+        ) from exc
+
+
+def _coerce_utc_datetime(value: str | datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).replace(microsecond=0)
+
+
+def _render_iso(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    return dt.isoformat()
+
+
+def _normalize_request_audit_metadata(record: RequestAuditRecord) -> str | None:
+    metadata_json = record.get("metadataJson")
+    if metadata_json is not None:
+        text = str(metadata_json).strip()
+        return text or None
+
+    metadata = record.get("metadata")
+    if metadata is None:
+        return None
+    if isinstance(metadata, str):
+        text = metadata.strip()
+        return text or None
+    return json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+
+
+def _normalize_request_audit_record(record: RequestAuditRecord) -> dict[str, Any]:
+    created_at_utc = _coerce_utc_datetime(record.get("createdAtUtc"))
+    if created_at_utc is None:
+        created_at_utc = datetime.now(timezone.utc).replace(microsecond=0)
+    local_timezone = _request_audit_timezone()
+    created_at_local = created_at_utc.astimezone(local_timezone)
+
+    first_replied_at_utc = _coerce_utc_datetime(record.get("firstRepliedAtUtc"))
+    first_replied_at_local = (
+        first_replied_at_utc.astimezone(local_timezone)
+        if first_replied_at_utc is not None
+        else None
+    )
+
+    message_id = str(record.get("messageId") or "").strip()
+    if not message_id:
+        raise ValueError("request audit 저장에는 messageId가 필요해")
+
+    request_text = str(record.get("requestText") or "").strip()
+    if not request_text:
+        raise ValueError("request audit 저장에는 requestText가 필요해")
+
+    user_id = str(record.get("userId") or "").strip()
+    if not user_id:
+        raise ValueError("request audit 저장에는 userId가 필요해")
+
+    channel_id = str(record.get("channelId") or "").strip()
+    thread_id = str(record.get("threadId") or "").strip() or message_id
+
+    reply_count = max(0, int(record.get("replyCount") or 0))
+    is_thread_root = int(
+        bool(record.get("isThreadRoot"))
+        if "isThreadRoot" in record
+        else thread_id == message_id
+    )
+
+    requested_date = str(record.get("requestedDate") or "").strip() or None
+    route_name = str(record.get("routeName") or "unknown").strip() or "unknown"
+    status = str(record.get("status") or "handled").strip() or "handled"
+
+    return {
+        "createdAtUtc": _render_iso(created_at_utc),
+        "createdAtLocal": _render_iso(created_at_local),
+        "requestDateLocal": created_at_local.date().isoformat(),
+        "sourcePlatform": str(record.get("sourcePlatform") or "slack").strip() or "slack",
+        "workspaceId": str(record.get("workspaceId") or "").strip(),
+        "eventType": str(record.get("eventType") or "message").strip() or "message",
+        "routeName": route_name,
+        "routeMode": str(record.get("routeMode") or "").strip() or None,
+        "status": status,
+        "userId": user_id,
+        "channelId": channel_id,
+        "threadId": thread_id,
+        "messageId": message_id,
+        "isThreadRoot": is_thread_root,
+        "permalink": str(record.get("permalink") or "").strip() or None,
+        "threadPermalink": str(record.get("threadPermalink") or "").strip() or None,
+        "requestText": request_text,
+        "normalizedQuestion": str(record.get("normalizedQuestion") or "").strip() or None,
+        "requestKey": str(record.get("requestKey") or "").strip() or None,
+        "subjectType": str(record.get("subjectType") or "").strip() or None,
+        "subjectKey": str(record.get("subjectKey") or "").strip() or None,
+        "requestedDate": requested_date,
+        "replyCount": reply_count,
+        "firstRepliedAtUtc": _render_iso(first_replied_at_utc),
+        "firstRepliedAtLocal": _render_iso(first_replied_at_local),
+        "errorType": str(record.get("errorType") or "").strip() or None,
+        "metadataJson": _normalize_request_audit_metadata(record),
+    }
+
+
+def _request_audit_db_path(db_path: str | Path | None = None) -> Path:
+    return _resolve_sqlite_path(db_path or s.REQUEST_AUDIT_SQLITE_PATH)
+
+
+def _ensure_request_audit_schema(
+    db_path: str | Path | None = None,
+) -> Path:
+    actual_path = _request_audit_db_path(db_path)
+    connection = _connect_sqlite(actual_path, row_factory=False)
+    try:
+        for statement in _REQUEST_AUDIT_SCHEMA_STATEMENTS:
+            connection.execute(statement)
+    finally:
+        connection.close()
+    return actual_path
+
+
+def _save_request_audit_record(
+    record: RequestAuditRecord,
+    *,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    actual_path = _ensure_request_audit_schema(db_path)
+    normalized_record = _normalize_request_audit_record(record)
+    connection = _connect_sqlite(actual_path, row_factory=False)
+    try:
+        cursor = connection.execute(_REQUEST_AUDIT_UPSERT_SQL, normalized_record)
+        row = connection.execute(
+            f"""
+            SELECT seq, createdAtUtc, routeName, status, replyCount
+            FROM {_REQUEST_AUDIT_TABLE_NAME}
+            WHERE sourcePlatform = :sourcePlatform
+              AND channelId = :channelId
+              AND messageId = :messageId
+            """,
+            normalized_record,
+        ).fetchone()
+    finally:
+        connection.close()
+
+    return {
+        "dbPath": str(actual_path),
+        "rowcount": cursor.rowcount,
+        "seq": row[0] if row else None,
+        "createdAtUtc": row[1] if row else None,
+        "routeName": row[2] if row else normalized_record["routeName"],
+        "status": row[3] if row else normalized_record["status"],
+        "replyCount": row[4] if row else normalized_record["replyCount"],
+    }
+
+
+def _backup_request_audit_to_s3(
+    *,
+    db_path: str | Path | None = None,
+    bucket: str | None = None,
+    key_prefix: str | None = None,
+    s3_client: Any | None = None,
+) -> dict[str, Any]:
+    actual_path = _ensure_request_audit_schema(db_path)
+    actual_bucket = str(
+        bucket or s.REQUEST_AUDIT_SQLITE_S3_BACKUP_BUCKET
+    ).strip()
+    if not actual_bucket:
+        raise RuntimeError("REQUEST_AUDIT_SQLITE_S3_BACKUP_BUCKET이 비어 있어")
+
+    return _backup_sqlite_to_s3(
+        actual_path,
+        bucket=actual_bucket,
+        key_prefix=key_prefix or s.REQUEST_AUDIT_SQLITE_S3_BACKUP_PREFIX,
+        s3_client=s3_client,
+        storage_class=s.REQUEST_AUDIT_SQLITE_S3_STORAGE_CLASS,
+        server_side_encryption=s.REQUEST_AUDIT_SQLITE_S3_SERVER_SIDE_ENCRYPTION,
+    )
+
+
+def _backup_request_audit_to_configured_s3(
+    *,
+    db_path: str | Path | None = None,
+    s3_client: Any | None = None,
+) -> dict[str, Any] | None:
+    if not s.REQUEST_AUDIT_SQLITE_S3_BACKUP_ENABLED:
+        return None
+    return _backup_request_audit_to_s3(
+        db_path=db_path,
+        s3_client=s3_client,
+    )
+
+
+def _restore_request_audit_from_s3(
+    *,
+    db_path: str | Path | None = None,
+    bucket: str | None = None,
+    key_prefix: str | None = None,
+    s3_client: Any | None = None,
+    only_if_missing: bool = True,
+) -> dict[str, Any]:
+    actual_bucket = str(
+        bucket or s.REQUEST_AUDIT_SQLITE_S3_BACKUP_BUCKET
+    ).strip()
+    if not actual_bucket:
+        raise RuntimeError("REQUEST_AUDIT_SQLITE_S3_BACKUP_BUCKET이 비어 있어")
+
+    return _restore_sqlite_from_s3(
+        _request_audit_db_path(db_path),
+        bucket=actual_bucket,
+        key_prefix=key_prefix or s.REQUEST_AUDIT_SQLITE_S3_BACKUP_PREFIX,
+        s3_client=s3_client,
+        only_if_missing=only_if_missing,
+    )
+
+
+def _restore_request_audit_from_configured_s3(
+    *,
+    db_path: str | Path | None = None,
+    s3_client: Any | None = None,
+    only_if_missing: bool = True,
+) -> dict[str, Any] | None:
+    if not s.REQUEST_AUDIT_SQLITE_S3_RESTORE_ON_STARTUP:
+        return None
+    return _restore_request_audit_from_s3(
+        db_path=db_path,
+        s3_client=s3_client,
+        only_if_missing=only_if_missing,
+    )
+
+
+def _run_request_audit_backup_job(
+    *,
+    db_path: str | Path | None = None,
+    s3_client: Any | None = None,
+) -> dict[str, Any] | None:
+    if not s.REQUEST_AUDIT_SQLITE_S3_BACKUP_ENABLED:
+        return None
+    return _backup_request_audit_to_s3(
+        db_path=db_path,
+        s3_client=s3_client,
+    )
+
+
+def _initialize_request_audit_storage(
+    *,
+    db_path: str | Path | None = None,
+    s3_client: Any | None = None,
+) -> dict[str, Any] | None:
+    if not s.REQUEST_AUDIT_SQLITE_ENABLED:
+        return None
+
+    restore_result: dict[str, Any] | None = None
+    if s.REQUEST_AUDIT_SQLITE_S3_RESTORE_ON_STARTUP:
+        restore_result = _restore_request_audit_from_configured_s3(
+            db_path=db_path,
+            s3_client=s3_client,
+            only_if_missing=True,
+        )
+
+    actual_path = _ensure_request_audit_schema(db_path)
+    return {
+        "dbPath": str(actual_path),
+        "restored": restore_result,
+    }

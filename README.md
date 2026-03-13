@@ -56,6 +56,9 @@
   - `db.py`: read-only DB 연결/검증/실행(명령 파싱/문구 제외)
   - `notion.py`: Notion API 호출, page/block 로드, 캐시
   - `s3.py`: S3 client 생성
+  - `sqlite_store.py`: 로컬 SQLite 연결, WAL 설정, 스냅샷/S3 백업 helper
+  - `request_audit.py`: 채널 요청 로그용 SQLite schema/upsert/backup helper
+  - `request_audit_backup.py`: request audit SQLite snapshot S3 백업 job entrypoint
 - `boxer/routers/company`
   - 회사 도메인 로직 전용
   - 예: 바코드 영상 개수, app-user 조회, 장비 로그 파싱/분석, S3 요청 파싱
@@ -86,6 +89,9 @@
 
 - Slack 어댑터가 Socket Mode로 동작 (레퍼런스 구현)
 - `@Bot ping` 멘션에 스레드로 응답
+- `REQUEST_AUDIT_SQLITE_ENABLED=true`면 Slack 요청 메타데이터용 로컬 SQLite를 시작 시 초기화하고 요청 단위로 저장 가능
+- 선택적으로 최신 SQLite snapshot을 S3에 백업하고, 앱 시작 시 최신 snapshot 복구 가능
+- S3 백업은 요청 시점이 아니라 `python -m boxer.routers.common.request_audit_backup` 같은 주기 job으로 실행 가능
 - Slack 스레드 맥락을 읽어 LLM 프롬프트에 주입
 - LLM 제공자 라우팅 지원 (`ollama`, `claude`)
 - 조회형 응답은 서버가 근거를 수집한 뒤, LLM이 근거(JSON) 기반으로 최종 문장화
@@ -380,6 +386,41 @@ sudo systemctl status boxer --no-pager -l
 ```bash
 sudo systemctl is-active boxer
 sudo journalctl -u boxer -f -o short-iso
+```
+
+6. request audit S3 백업 timer 등록 예시
+
+```bash
+sudo tee /etc/systemd/system/boxer-request-audit-backup.service > /dev/null <<'EOF'
+[Unit]
+Description=Boxer Request Audit SQLite Backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user/rag-bot
+EnvironmentFile=/home/ec2-user/rag-bot/.env
+ExecStart=/home/ec2-user/rag-bot/.venv/bin/python -m boxer.routers.common.request_audit_backup
+EOF
+
+sudo tee /etc/systemd/system/boxer-request-audit-backup.timer > /dev/null <<'EOF'
+[Unit]
+Description=Run Boxer Request Audit Backup Daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now boxer-request-audit-backup.timer
+sudo systemctl list-timers --all | grep boxer-request-audit-backup
 ```
 
 문제 해결 포인트:
