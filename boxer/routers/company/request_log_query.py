@@ -17,10 +17,12 @@ from boxer.routers.common.request_log import (
 _REQUEST_LOG_PREFIXES = (
     "요청 로그",
     "요청로그",
-    "요청 통계",
-    "요청통계",
     "request log",
     "requestlog",
+)
+_REQUEST_LOG_OVERVIEW_PREFIXES = (
+    "요청 통계",
+    "요청통계",
 )
 _REQUEST_LOG_DATE_PATTERN = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
 _REQUEST_LOG_LIMIT_PATTERN = re.compile(r"(?<![-\d])([1-9]\d?)(?![-\d])")
@@ -32,6 +34,7 @@ class RequestLogQuerySpec:
     target_date: str | None
     scope_label: str
     limit: int
+    user_query: str | None = None
 
 
 def _request_log_timezone() -> ZoneInfo:
@@ -52,8 +55,10 @@ def _extract_request_log_query(question: str) -> RequestLogQuerySpec | None:
         return None
 
     remainder = ""
-    for prefix in _REQUEST_LOG_PREFIXES:
+    matched_prefix = ""
+    for prefix in (*_REQUEST_LOG_PREFIXES, *_REQUEST_LOG_OVERVIEW_PREFIXES):
         if normalized.lower().startswith(prefix.lower()):
+            matched_prefix = prefix
             remainder = normalized[len(prefix):].strip()
             break
     else:
@@ -63,13 +68,13 @@ def _extract_request_log_query(question: str) -> RequestLogQuerySpec | None:
     if remainder.startswith("최근") or lowered_remainder.startswith("recent"):
         target_date, scope_label = _extract_request_log_scope(
             remainder,
-            default_scope="all",
+            default_scope="today",
         )
         return RequestLogQuerySpec(
             mode="recent",
             target_date=target_date,
             scope_label=scope_label,
-            limit=_extract_request_log_limit(remainder, default=10, max_limit=30),
+            limit=_extract_request_log_limit(remainder, default=100, max_limit=100),
         )
 
     if (
@@ -104,16 +109,61 @@ def _extract_request_log_query(question: str) -> RequestLogQuerySpec | None:
             limit=_extract_request_log_limit(remainder, default=10, max_limit=20),
         )
 
+    user_query = _extract_request_log_user_query(remainder)
+    if matched_prefix in _REQUEST_LOG_OVERVIEW_PREFIXES:
+        target_date, scope_label = _extract_request_log_scope(
+            remainder,
+            default_scope="today",
+        )
+        return RequestLogQuerySpec(
+            mode="overview",
+            target_date=target_date,
+            scope_label=scope_label,
+            limit=_extract_request_log_limit(remainder, default=5, max_limit=10),
+        )
+
     target_date, scope_label = _extract_request_log_scope(
         remainder,
         default_scope="today",
     )
     return RequestLogQuerySpec(
-        mode="overview",
+        mode="recent",
         target_date=target_date,
         scope_label=scope_label,
-        limit=_extract_request_log_limit(remainder, default=5, max_limit=10),
+        limit=_extract_request_log_limit(remainder, default=100, max_limit=100),
+        user_query=user_query,
     )
+
+
+def _extract_request_log_user_query(text: str) -> str | None:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return None
+
+    working = _REQUEST_LOG_DATE_PATTERN.sub(" ", normalized)
+    working = re.sub(
+        r"\b(today|yesterday|all|recent|user|users|route|routes|summary|overview)\b",
+        " ",
+        working,
+        flags=re.IGNORECASE,
+    )
+    working = re.sub(r"(?<![-\d])[1-9]\d?(?![-\d])", " ", working)
+    for token in (
+        "오늘",
+        "어제",
+        "전체",
+        "누적",
+        "최근",
+        "사용자",
+        "유저",
+        "라우트",
+        "경로",
+        "요약",
+        "통계",
+    ):
+        working = working.replace(token, " ")
+    compact = " ".join(working.split()).strip(" ,")
+    return compact or None
 
 
 def _extract_request_log_scope(
@@ -166,6 +216,7 @@ def _query_request_log_text(
     if spec.mode == "recent":
         result = _list_request_log_recent(
             target_date=spec.target_date,
+            user_query=spec.user_query,
             limit=spec.limit,
             db_path=db_path,
         )
@@ -203,7 +254,7 @@ def _format_request_log_overview(result: dict[str, Any], spec: RequestLogQuerySp
     ]
     if total_count <= 0:
         lines.append("• 결과: 저장된 요청 로그가 없어")
-        lines.append("• 예시: `요청 로그 최근 10`, `요청 로그 사용자`, `요청 로그 라우트`")
+        lines.append("• 예시: `요청 로그`, `요청 로그 Hyun`, `요청 로그 2026-03-13`, `요청 통계`")
         return "\n".join(lines)
 
     top_users = [
@@ -232,7 +283,7 @@ def _format_request_log_overview(result: dict[str, Any], spec: RequestLogQuerySp
             )
 
     lines.append("")
-    lines.append("• 예시: `요청 로그 최근 10`, `요청 로그 사용자`, `요청 로그 라우트`, `요청 로그 전체`")
+    lines.append("• 예시: `요청 로그`, `요청 로그 Hyun`, `요청 로그 2026-03-13`, `요청 로그 사용자`, `요청 통계`")
     return "\n".join(lines)
 
 
@@ -241,9 +292,15 @@ def _format_request_log_recent(result: dict[str, Any], spec: RequestLogQuerySpec
     lines = [
         "*요청 로그 최근 조회 결과*",
         f"• 기준: {spec.scope_label}",
-        f"• 표시 건수: 최근 `{spec.limit}건`",
-        f"• 전체 요청: `{int(result.get('totalCount') or 0)}건`",
     ]
+    if spec.user_query:
+        lines.append(f"• 사용자: `{spec.user_query}`")
+    lines.extend(
+        [
+            f"• 표시 건수: 최근 `{spec.limit}건`",
+            f"• 전체 요청: `{int(result.get('totalCount') or 0)}건`",
+        ]
+    )
     if not rows:
         lines.append("• 결과: 조건에 맞는 요청 로그가 없어")
         return "\n".join(lines)

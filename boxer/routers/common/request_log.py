@@ -398,11 +398,37 @@ def _save_request_log_record(
 def _build_request_log_filter_clause(
     *,
     target_date: str | None = None,
+    user_query: str | None = None,
 ) -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    parameters: list[Any] = []
+
     normalized_target_date = str(target_date or "").strip()
-    if not normalized_target_date:
+    if normalized_target_date:
+        clauses.append("requestDateLocal = ?")
+        parameters.append(normalized_target_date)
+
+    normalized_user_query = str(user_query or "").strip()
+    if normalized_user_query:
+        lowered_user_query = normalized_user_query.lower()
+        clauses.append(
+            "("
+            "userId = ? "
+            "OR LOWER(COALESCE(userName, '')) = ? "
+            "OR LOWER(COALESCE(userName, '')) LIKE ?"
+            ")"
+        )
+        parameters.extend(
+            [
+                normalized_user_query,
+                lowered_user_query,
+                f"%{lowered_user_query}%",
+            ]
+        )
+
+    if not clauses:
         return "", []
-    return "WHERE requestDateLocal = ?", [normalized_target_date]
+    return f"WHERE {' AND '.join(clauses)}", parameters
 
 
 def _query_request_log_rows(
@@ -458,11 +484,15 @@ def _normalize_request_log_query_limit(
 def _list_request_log_recent(
     *,
     target_date: str | None = None,
+    user_query: str | None = None,
     limit: int | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     actual_limit = _normalize_request_log_query_limit(limit, default=10, max_limit=30)
-    where_clause, parameters = _build_request_log_filter_clause(target_date=target_date)
+    where_clause, parameters = _build_request_log_filter_clause(
+        target_date=target_date,
+        user_query=user_query,
+    )
     total_count = int(
         _query_request_log_value(
             f"SELECT COUNT(*) AS value FROM {_REQUEST_LOG_TABLE_NAME} {where_clause}",
@@ -499,6 +529,7 @@ def _list_request_log_recent(
     return {
         "dbPath": str(_request_log_db_path(db_path)),
         "targetDate": target_date,
+        "userQuery": user_query,
         "limit": actual_limit,
         "totalCount": total_count,
         "rows": rows,
