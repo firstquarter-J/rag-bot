@@ -6,13 +6,13 @@ from slack_bolt import App
 
 from boxer.core import settings as s
 from boxer.core.utils import _extract_question, _format_reply_text, _validate_tokens
-from boxer.routers.common.request_audit import (
-    _initialize_request_audit_storage,
-    _save_request_audit_record,
+from boxer.routers.common.request_log import (
+    _initialize_request_log_storage,
+    _save_request_log_record,
 )
 
 
-class SlackRequestAuditContext(TypedDict, total=False):
+class SlackRequestLogContext(TypedDict, total=False):
     route_name: str
     route_mode: str | None
     status: str
@@ -37,7 +37,7 @@ class MentionPayload(TypedDict):
     channel_id: str
     current_ts: str
     thread_ts: str
-    request_audit: SlackRequestAuditContext
+    request_log: SlackRequestLogContext
 
 
 class MessagePayload(TypedDict):
@@ -48,7 +48,7 @@ class MessagePayload(TypedDict):
     channel_id: str
     current_ts: str
     thread_ts: str
-    request_audit: SlackRequestAuditContext
+    request_log: SlackRequestLogContext
 
 
 class SlackReplyFn(Protocol):
@@ -65,18 +65,23 @@ class SlackMessageReplyFn(Protocol):
 MessageHandler = Callable[[MessagePayload, SlackMessageReplyFn, Any, logging.Logger], None]
 
 
-def _ensure_request_audit_context(
+def _ensure_request_log_context(
     payload: MentionPayload | MessagePayload,
-) -> SlackRequestAuditContext:
-    context = payload.get("request_audit")
+) -> SlackRequestLogContext:
+    context = payload.get("request_log")
     if isinstance(context, dict):
         return context
+    legacy_context = payload.get("request_audit")
+    if isinstance(legacy_context, dict):
+        payload["request_log"] = legacy_context
+        return legacy_context
     context = {}
+    payload["request_log"] = context
     payload["request_audit"] = context
     return context
 
 
-def _set_request_audit_route(
+def _set_request_log_route(
     payload: MentionPayload | MessagePayload,
     route_name: str,
     *,
@@ -87,7 +92,7 @@ def _set_request_audit_route(
     subject_key: str | None = None,
     requested_date: str | None = None,
 ) -> None:
-    context = _ensure_request_audit_context(payload)
+    context = _ensure_request_log_context(payload)
     normalized_route_name = str(route_name or "").strip()
     if normalized_route_name:
         context["route_name"] = normalized_route_name
@@ -111,13 +116,13 @@ def _set_request_audit_route(
         context["requested_date"] = normalized_requested_date
 
 
-def _set_request_audit_status(
+def _set_request_log_status(
     payload: MentionPayload | MessagePayload,
     status: str,
     *,
     error_type: str | None = None,
 ) -> None:
-    context = _ensure_request_audit_context(payload)
+    context = _ensure_request_log_context(payload)
     normalized_status = str(status or "").strip()
     if normalized_status:
         context["status"] = normalized_status
@@ -126,7 +131,7 @@ def _set_request_audit_status(
         context["error_type"] = normalized_error_type
 
 
-def _merge_request_audit_metadata(
+def _merge_request_log_metadata(
     payload: MentionPayload | MessagePayload,
     **metadata: Any,
 ) -> None:
@@ -137,7 +142,7 @@ def _merge_request_audit_metadata(
     }
     if not filtered:
         return
-    context = _ensure_request_audit_context(payload)
+    context = _ensure_request_log_context(payload)
     existing = context.get("metadata")
     if isinstance(existing, dict):
         existing.update(filtered)
@@ -145,10 +150,10 @@ def _merge_request_audit_metadata(
     context["metadata"] = filtered
 
 
-def _mark_request_audit_reply(
+def _mark_request_log_reply(
     payload: MentionPayload | MessagePayload,
 ) -> None:
-    context = _ensure_request_audit_context(payload)
+    context = _ensure_request_log_context(payload)
     context["reply_count"] = int(context.get("reply_count") or 0) + 1
     if context.get("first_replied_at_utc") is None:
         context["first_replied_at_utc"] = datetime.now(timezone.utc).replace(microsecond=0)
@@ -180,21 +185,21 @@ def _load_slack_permalink(
         return None
 
 
-def _persist_request_audit(
+def _persist_request_log(
     payload: MentionPayload | MessagePayload,
     *,
     event_type: str,
     client: Any,
     logger: logging.Logger,
 ) -> None:
-    if not s.REQUEST_AUDIT_SQLITE_ENABLED:
+    if not s.REQUEST_LOG_SQLITE_ENABLED:
         return
 
     current_ts = str(payload.get("current_ts") or "").strip()
     if not current_ts:
         return
 
-    context = _ensure_request_audit_context(payload)
+    context = _ensure_request_log_context(payload)
     channel_id = str(payload.get("channel_id") or "").strip()
     thread_ts = str(payload.get("thread_ts") or "").strip() or current_ts
     permalink = str(context.get("permalink") or "").strip() or None
@@ -211,7 +216,7 @@ def _persist_request_audit(
         normalized_question = str(payload.get("raw_text") or "").strip() or None
 
     try:
-        _save_request_audit_record(
+        _save_request_log_record(
             {
                 "sourcePlatform": "slack",
                 "workspaceId": str(payload.get("workspace_id") or "").strip(),
@@ -240,7 +245,7 @@ def _persist_request_audit(
         )
     except Exception:
         logger.warning(
-            "Failed to persist request audit event_type=%s channel=%s ts=%s",
+            "Failed to persist request log event_type=%s channel=%s ts=%s",
             event_type,
             channel_id,
             current_ts,
@@ -254,12 +259,12 @@ def create_slack_app(
 ) -> App:
     _validate_tokens(include_llm=False, include_data_sources=False)
     logger = logging.getLogger(__name__)
-    if s.REQUEST_AUDIT_SQLITE_ENABLED and s.REQUEST_AUDIT_SQLITE_INIT_ON_STARTUP:
+    if s.REQUEST_LOG_SQLITE_ENABLED and s.REQUEST_LOG_SQLITE_INIT_ON_STARTUP:
         try:
-            init_result = _initialize_request_audit_storage()
-            logger.info("Initialized request audit storage: %s", init_result)
+            init_result = _initialize_request_log_storage()
+            logger.info("Initialized request log storage: %s", init_result)
         except Exception:
-            logger.warning("Failed to initialize request audit storage", exc_info=True)
+            logger.warning("Failed to initialize request log storage", exc_info=True)
     app = App(token=s.SLACK_BOT_TOKEN, signing_secret=s.SLACK_SIGNING_SECRET)
 
     @app.event("app_mention")
@@ -279,7 +284,7 @@ def create_slack_app(
             "channel_id": event.get("channel") or "",
             "current_ts": event.get("ts") or "",
             "thread_ts": thread_ts or "",
-            "request_audit": {
+            "request_log": {
                 "route_name": "app_mention",
                 "status": "handled",
             },
@@ -294,7 +299,7 @@ def create_slack_app(
                     unfurl_links=False,
                     unfurl_media=False,
                 )
-                _mark_request_audit_reply(payload)
+                _mark_request_log_reply(payload)
                 return
 
             clean_text = (reply_text or "").strip()
@@ -306,15 +311,15 @@ def create_slack_app(
                 unfurl_links=False,
                 unfurl_media=False,
             )
-            _mark_request_audit_reply(payload)
+            _mark_request_log_reply(payload)
 
         try:
             mention_handler(payload, reply, client, logger)
         except Exception as exc:
-            _set_request_audit_status(payload, "error", error_type=type(exc).__name__)
+            _set_request_log_status(payload, "error", error_type=type(exc).__name__)
             raise
         finally:
-            _persist_request_audit(
+            _persist_request_log(
                 payload,
                 event_type="app_mention",
                 client=client,
@@ -347,7 +352,7 @@ def create_slack_app(
             "channel_id": event.get("channel") or "",
             "current_ts": event.get("ts") or "",
             "thread_ts": thread_ts,
-            "request_audit": {
+            "request_log": {
                 "route_name": "message",
                 "status": "handled",
             },
@@ -365,22 +370,22 @@ def create_slack_app(
                     unfurl_links=False,
                     unfurl_media=False,
                 )
-                _mark_request_audit_reply(payload)
+                _mark_request_log_reply(payload)
                 return
             say(
                 text=clean_text,
                 unfurl_links=False,
                 unfurl_media=False,
             )
-            _mark_request_audit_reply(payload)
+            _mark_request_log_reply(payload)
 
         try:
             message_handler(payload, reply, client, logger)
         except Exception as exc:
-            _set_request_audit_status(payload, "error", error_type=type(exc).__name__)
+            _set_request_log_status(payload, "error", error_type=type(exc).__name__)
             raise
         finally:
-            _persist_request_audit(
+            _persist_request_log(
                 payload,
                 event_type="message",
                 client=client,
@@ -388,3 +393,12 @@ def create_slack_app(
             )
 
     return app
+
+
+SlackRequestAuditContext = SlackRequestLogContext
+_ensure_request_audit_context = _ensure_request_log_context
+_set_request_audit_route = _set_request_log_route
+_set_request_audit_status = _set_request_log_status
+_merge_request_audit_metadata = _merge_request_log_metadata
+_mark_request_audit_reply = _mark_request_log_reply
+_persist_request_audit = _persist_request_log

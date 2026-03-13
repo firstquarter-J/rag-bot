@@ -14,7 +14,7 @@
 ### 1) Open Core (공개 대상)
 
 - 범용 `RAG LLM Bot` 엔진
-- Intent/Slot Router, Policy Guard, Tool Executor, Evidence Merger, Audit Logger
+- Intent/Slot Router, Policy Guard, Tool Executor, Evidence Merger, Request Logger
 - 팀/도메인 무관하게 재사용 가능한 구조
 
 ### 2) Domain Adapter (회사 전용)
@@ -57,8 +57,8 @@
   - `notion.py`: Notion API 호출, page/block 로드, 캐시
   - `s3.py`: S3 client 생성
   - `sqlite_store.py`: 로컬 SQLite 연결, WAL 설정, 스냅샷/S3 백업 helper
-  - `request_audit.py`: 채널 요청 로그용 SQLite schema/upsert/backup helper
-  - `request_audit_backup.py`: request audit SQLite snapshot S3 백업 job entrypoint
+  - `request_log.py`: 채널 요청 로그용 SQLite schema/upsert/backup helper
+  - `request_log_backup.py`: request log SQLite snapshot S3 백업 job entrypoint
 - `boxer/routers/company`
   - 회사 도메인 로직 전용
   - 예: 바코드 영상 개수, app-user 조회, 장비 로그 파싱/분석, S3 요청 파싱
@@ -81,7 +81,7 @@
 
 - Slack은 현재 레퍼런스 채널이며, Web/CLI/사내툴로 채널 확장 가능
 - DB/API/S3/Notion 커넥터를 모듈로 분리해 제품형 확장 가능
-- 권한 정책(RBAC), 개인정보 마스킹, 감사 로그를 제품 기본 기능으로 내장
+- 권한 정책(RBAC), 개인정보 마스킹, 요청 로그를 제품 기본 기능으로 내장
 - 멀티 워크스페이스/멀티 테넌트 구조로 확장 가능
 - 공개 코어 위에 도메인 Router(예: Momybox 전용)를 붙여 서비스별 챗봇으로 전개
 
@@ -89,9 +89,11 @@
 
 - Slack 어댑터가 Socket Mode로 동작 (레퍼런스 구현)
 - `@Bot ping` 멘션에 스레드로 응답
-- `REQUEST_AUDIT_SQLITE_ENABLED=true`면 Slack 요청 메타데이터용 로컬 SQLite를 시작 시 초기화하고 요청 단위로 저장 가능
+- `REQUEST_LOG_SQLITE_ENABLED=true`면 Slack 요청 메타데이터용 로컬 SQLite를 시작 시 초기화하고 요청 단위로 저장 가능
 - 선택적으로 최신 SQLite snapshot을 S3에 백업하고, 앱 시작 시 최신 snapshot 복구 가능
-- S3 백업은 요청 시점이 아니라 `python -m boxer.routers.common.request_audit_backup` 같은 주기 job으로 실행 가능
+- S3 백업은 요청 시점이 아니라 `python -m boxer.routers.common.request_log_backup` 같은 주기 job으로 실행 가능
+- S3 backup object key는 `YYYY/MM/DD/<sqlite-snapshot>.db` 형태로 저장되며, prefix를 지정하면 `<prefix>/YYYY/MM/DD/...` 형태가 됨
+- `REQUEST_LOG_SQLITE_S3_PREFIX` 기본값은 비어 있으며, 전용 버킷이면 루트 날짜 폴더에 저장하고 공유 버킷일 때만 prefix를 지정
 - Slack 스레드 맥락을 읽어 LLM 프롬프트에 주입
 - LLM 제공자 라우팅 지원 (`ollama`, `claude`)
 - 조회형 응답은 서버가 근거를 수집한 뒤, LLM이 근거(JSON) 기반으로 최종 문장화
@@ -159,9 +161,9 @@
 - 근거 기반 최종 답변 생성
 - 근거가 부족하면 보강 질문 1개 또는 근거 부족 안내
 
-7. Audit Logger
+7. Request Logger
 
-- 실행 추적 정보와 근거 메타데이터 저장
+- 실행 추적 정보와 요청 메타데이터 저장
 
 ## 권장 자연어 처리 구조 (Hybrid Router)
 
@@ -388,12 +390,12 @@ sudo systemctl is-active boxer
 sudo journalctl -u boxer -f -o short-iso
 ```
 
-6. request audit S3 백업 timer 등록 예시
+6. request log S3 백업 timer 등록 예시
 
 ```bash
-sudo tee /etc/systemd/system/boxer-request-audit-backup.service > /dev/null <<'EOF'
+sudo tee /etc/systemd/system/boxer-request-log-backup.service > /dev/null <<'EOF'
 [Unit]
-Description=Boxer Request Audit SQLite Backup
+Description=Boxer Request Log SQLite Backup
 After=network-online.target
 Wants=network-online.target
 
@@ -403,12 +405,12 @@ User=ec2-user
 Group=ec2-user
 WorkingDirectory=/home/ec2-user/rag-bot
 EnvironmentFile=/home/ec2-user/rag-bot/.env
-ExecStart=/home/ec2-user/rag-bot/.venv/bin/python -m boxer.routers.common.request_audit_backup
+ExecStart=/home/ec2-user/rag-bot/.venv/bin/python -m boxer.routers.common.request_log_backup
 EOF
 
-sudo tee /etc/systemd/system/boxer-request-audit-backup.timer > /dev/null <<'EOF'
+sudo tee /etc/systemd/system/boxer-request-log-backup.timer > /dev/null <<'EOF'
 [Unit]
-Description=Run Boxer Request Audit Backup Daily
+Description=Run Boxer Request Log Backup Daily
 
 [Timer]
 OnCalendar=daily
@@ -419,8 +421,8 @@ WantedBy=timers.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now boxer-request-audit-backup.timer
-sudo systemctl list-timers --all | grep boxer-request-audit-backup
+sudo systemctl enable --now boxer-request-log-backup.timer
+sudo systemctl list-timers --all | grep boxer-request-log-backup
 ```
 
 문제 해결 포인트:
@@ -522,7 +524,7 @@ Slack/Web -> Input Normalizer -> Intent/Slot Router -> Policy Guard -> Tool Exec
                                                          v
                               Evidence Merger -> Answer Synthesizer -> Response
                                                          \
-                                                          -> Audit Logger
+                                                          -> Request Logger
 ```
 
 ## 구현 페이즈 기록 (History + Progress)

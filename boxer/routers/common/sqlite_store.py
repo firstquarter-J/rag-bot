@@ -6,6 +6,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from boxer.core import settings as s
 from boxer.routers.common.s3 import _build_s3_client
@@ -33,7 +34,7 @@ def _connect_sqlite(
 ) -> sqlite3.Connection:
     actual_timeout = max(
         1,
-        int(timeout_sec if timeout_sec is not None else s.REQUEST_AUDIT_SQLITE_TIMEOUT_SEC),
+        int(timeout_sec if timeout_sec is not None else s.REQUEST_LOG_SQLITE_TIMEOUT_SEC),
     )
     resolved_path = _ensure_sqlite_parent_dir(db_path)
     connection = sqlite3.connect(
@@ -42,7 +43,7 @@ def _connect_sqlite(
         isolation_level=None,
     )
     connection.execute(
-        f"PRAGMA busy_timeout = {max(1000, s.REQUEST_AUDIT_SQLITE_BUSY_TIMEOUT_MS)}"
+        f"PRAGMA busy_timeout = {max(1000, s.REQUEST_LOG_SQLITE_BUSY_TIMEOUT_MS)}"
     )
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA temp_store = MEMORY")
@@ -61,6 +62,11 @@ def _build_sqlite_snapshot_key(
 ) -> str:
     resolved_path = _resolve_sqlite_path(db_path)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    try:
+        local_now = datetime.now(ZoneInfo(s.REQUEST_LOG_TIMEZONE))
+    except Exception:
+        local_now = datetime.now(timezone.utc)
+    date_prefix = local_now.strftime("%Y/%m/%d")
     hostname = "".join(
         ch if ch.isalnum() or ch in {"-", "_"} else "-"
         for ch in (socket.gethostname().strip() or "unknown-host")
@@ -68,9 +74,9 @@ def _build_sqlite_snapshot_key(
     suffix = resolved_path.suffix or ".sqlite3"
     filename = f"{resolved_path.stem}-{hostname}-{timestamp}{suffix}"
     normalized_prefix = str(key_prefix or "").strip().strip("/")
-    if not normalized_prefix:
-        return filename
-    return f"{normalized_prefix}/{filename}"
+    if normalized_prefix:
+        return f"{normalized_prefix}/{date_prefix}/{filename}"
+    return f"{date_prefix}/{filename}"
 
 
 def _sqlite_file_exists(db_path: str | Path) -> bool:
@@ -102,7 +108,7 @@ def _create_sqlite_snapshot(
     destination_connection = sqlite3.connect(destination_path)
     try:
         source_connection.execute(
-            f"PRAGMA busy_timeout = {max(1000, s.REQUEST_AUDIT_SQLITE_BUSY_TIMEOUT_MS)}"
+            f"PRAGMA busy_timeout = {max(1000, s.REQUEST_LOG_SQLITE_BUSY_TIMEOUT_MS)}"
         )
         source_connection.backup(destination_connection)
     finally:
