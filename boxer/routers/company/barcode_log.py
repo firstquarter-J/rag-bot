@@ -2522,6 +2522,31 @@ def _build_phase2_scope_request_message(
     )
 
 
+def _build_barcode_log_empty_result(
+    *,
+    title: str,
+    barcode: str,
+    log_date: str,
+    mapped_device_count: int,
+    logs_found_any: int,
+    used_expanded_scope: bool,
+) -> str:
+    lines = [
+        title,
+        f"• 바코드: `{barcode}`",
+        f"• 날짜: `{log_date}`",
+        f"• 매핑 장비: `{mapped_device_count}개`",
+        f"• 확인한 로그 파일: `{logs_found_any}개`",
+    ]
+    if logs_found_any <= 0:
+        lines.append("• 결과: 날짜 기준 로그 파일을 찾지 못했어")
+    else:
+        lines.append("• 결과: 요청 바코드 세션을 찾지 못했어")
+    if used_expanded_scope:
+        lines.append("• 참고: 매핑 장비에서 세션을 못 찾아 동일 병원 장비까지 확장 검색했어")
+    return "\n".join(lines)
+
+
 def _extract_hospital_room_scope(question: str) -> tuple[str | None, str | None]:
     text = (question or "").strip()
     hospital_match = _HOSPITAL_SCOPE_PATTERN.search(text)
@@ -3062,6 +3087,7 @@ def _analyze_barcode_log_scan_events(
     logs_with_session = 0
     devices_with_session = 0
     displayed_device_index = 0
+    used_expanded_scope = False
     analysis_records: list[dict[str, Any]] = []
 
     lines = [
@@ -3180,37 +3206,26 @@ def _analyze_barcode_log_scan_events(
 
     _analyze_device_context_batch(target_device_contexts)
 
-    expanded_device_contexts = _expand_device_contexts_to_recordings_hospital_scope(
-        recordings_context,
-        target_device_contexts,
-    )
-    if expanded_device_contexts:
-        lines.append("• 참고: 동일 병원 장비까지 확장 검색했어")
-        _analyze_device_context_batch(expanded_device_contexts[: max(1, min(50, cs.LOG_ANALYSIS_MAX_DEVICES * 4))])
-
-    if logs_found_any == 0:
-        result_text = (
-            "*바코드 로그 스캔 분석 결과*\n"
-            f"• 바코드: `{barcode}`\n"
-            f"• 날짜: `{log_date}`\n"
-            f"• 매핑 장비: `{len(all_device_contexts)}개`\n"
-            "• 확인한 로그 파일: `0개`"
+    if logs_with_session == 0:
+        expanded_device_contexts = _expand_device_contexts_to_recordings_hospital_scope(
+            recordings_context,
+            target_device_contexts,
         )
-        return result_text, _build_log_analysis_payload(
-            mode="scan",
-            barcode=barcode,
-            request_date=log_date,
-            date_range=None,
-            records=[],
-        )
+        if expanded_device_contexts:
+            used_expanded_scope = True
+            lines.append("• 참고: 매핑 장비에서 세션을 못 찾아 동일 병원 장비까지 확장 검색했어")
+            _analyze_device_context_batch(
+                expanded_device_contexts[: max(1, min(50, cs.LOG_ANALYSIS_MAX_DEVICES * 4))]
+            )
 
     if logs_with_session == 0:
-        result_text = (
-            "*바코드 로그 스캔 분석 결과*\n"
-            f"• 바코드: `{barcode}`\n"
-            f"• 날짜: `{log_date}`\n"
-            f"• 매핑 장비: `{len(all_device_contexts)}개`\n"
-            f"• 확인한 로그 파일: `{logs_found_any}개`"
+        result_text = _build_barcode_log_empty_result(
+            title="*바코드 로그 스캔 분석 결과*",
+            barcode=barcode,
+            log_date=log_date,
+            mapped_device_count=len(all_device_contexts),
+            logs_found_any=logs_found_any,
+            used_expanded_scope=used_expanded_scope,
         )
         return result_text, _build_log_analysis_payload(
             mode="scan",
@@ -3275,6 +3290,7 @@ def _analyze_barcode_log_errors(
     total_session_count = 0
     devices_with_session = 0
     displayed_device_index = 0
+    used_expanded_scope = False
     analysis_records: list[dict[str, Any]] = []
     lines = [
         "*바코드 로그 에러 분석 결과*",
@@ -3394,37 +3410,26 @@ def _analyze_barcode_log_errors(
 
     _analyze_device_context_batch(target_device_contexts)
 
-    expanded_device_contexts = _expand_device_contexts_to_recordings_hospital_scope(
-        recordings_context,
-        target_device_contexts,
-    )
-    if expanded_device_contexts:
-        lines.append("• 참고: 동일 병원 장비까지 확장 검색했어")
-        _analyze_device_context_batch(expanded_device_contexts[: max(1, min(50, cs.LOG_ANALYSIS_MAX_DEVICES * 4))])
-
-    if logs_found_any == 0:
-        result_text = (
-            "*바코드 로그 에러 분석 결과*\n"
-            f"• 바코드: `{barcode}`\n"
-            f"• 날짜: `{log_date}`\n"
-            f"• 매핑 장비: `{len(all_device_contexts)}개`\n"
-            "• 확인한 로그 파일: `0개`"
+    if logs_with_session == 0:
+        expanded_device_contexts = _expand_device_contexts_to_recordings_hospital_scope(
+            recordings_context,
+            target_device_contexts,
         )
-        return result_text, _build_log_analysis_payload(
-            mode="error",
-            barcode=barcode,
-            request_date=log_date,
-            date_range=None,
-            records=[],
-        )
+        if expanded_device_contexts:
+            used_expanded_scope = True
+            lines.append("• 참고: 매핑 장비에서 세션을 못 찾아 동일 병원 장비까지 확장 검색했어")
+            _analyze_device_context_batch(
+                expanded_device_contexts[: max(1, min(50, cs.LOG_ANALYSIS_MAX_DEVICES * 4))]
+            )
 
     if logs_with_session == 0:
-        result_text = (
-            "*바코드 로그 에러 분석 결과*\n"
-            f"• 바코드: `{barcode}`\n"
-            f"• 날짜: `{log_date}`\n"
-            f"• 매핑 장비: `{len(all_device_contexts)}개`\n"
-            f"• 확인한 로그 파일: `{logs_found_any}개`"
+        result_text = _build_barcode_log_empty_result(
+            title="*바코드 로그 에러 분석 결과*",
+            barcode=barcode,
+            log_date=log_date,
+            mapped_device_count=len(all_device_contexts),
+            logs_found_any=logs_found_any,
+            used_expanded_scope=used_expanded_scope,
         )
         return result_text, _build_log_analysis_payload(
             mode="error",
