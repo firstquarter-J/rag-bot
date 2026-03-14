@@ -89,6 +89,7 @@
 
 - Slack 어댑터가 Socket Mode로 동작 (레퍼런스 구현)
 - `@Bot ping` 멘션에 스레드로 응답
+- `@Bot 사용법` 멘션에 자주 쓰는 조회 예시와 입력 팁을 응답
 - `REQUEST_LOG_SQLITE_ENABLED=true`면 Slack 요청 메타데이터용 로컬 SQLite를 시작 시 초기화하고 요청 단위로 저장 가능
 - 선택적으로 최신 SQLite snapshot을 S3에 백업하고, 앱 시작 시 최신 snapshot 복구 가능
 - S3 백업은 요청 시점이 아니라 `python -m boxer.routers.common.request_log_backup` 같은 주기 job으로 실행 가능
@@ -220,7 +221,7 @@
 {
   "source": "db",
   "intent": "video_count_by_barcode",
-  "query_key": "barcode=43032748143",
+  "query_key": "barcode=12345678910",
   "executed_at": "2026-02-27T18:52:10+09:00",
   "row_count": 110
 }
@@ -436,26 +437,26 @@ sudo systemctl list-timers --all | grep boxer-request-log-backup
   - `@Boxer ping`
 
 - 바코드 프로필 조회 (권한 사용자만)
-  - `@Boxer 43032748143`
-  - `@Boxer 바코드 43032748143 조회해줘`
+  - `@Boxer 12345678910`
+  - `@Boxer 바코드 12345678910 조회해줘`
 
 - DB 명시적 조회 모드
   - `@Boxer db 조회`
   - `@Boxer db 조회 SELECT NOW() AS now_time`
 
 - S3 명시적 조회 모드
-  - `@Boxer s3 영상 43032748143`
+  - `@Boxer s3 영상 12345678910`
   - `@Boxer s3 로그 <device-name> 2026-03-04`
 
 - 바코드 로그 자연어 분석 모드
-  - `@Boxer 43032748143 바코드로 오늘 로그 에러 분석해줘`
-  - `@Boxer 43032748143 어제 로그에 오류 있었어?`
-  - `@Boxer 43032748143 오늘 로그 단순 분석해줘`
-  - `@Boxer 43032748143 오늘 로그 스캔 명령 타임라인 보여줘`
+  - `@Boxer 12345678910 바코드로 오늘 로그 에러 분석해줘`
+  - `@Boxer 12345678910 어제 로그에 오류 있었어?`
+  - `@Boxer 12345678910 오늘 로그 단순 분석해줘`
+  - `@Boxer 12345678910 오늘 로그 스캔 명령 타임라인 보여줘`
 
 - 바코드 영상 개수 자연어 조회 모드
-  - `@Boxer 43032748143 영상 몇 개야`
-  - `@Boxer 바코드 43032748143 영상 개수 알려줘`
+  - `@Boxer 12345678910 영상 몇 개야`
+  - `@Boxer 바코드 12345678910 영상 개수 알려줘`
 
 ## 운영 로그
 

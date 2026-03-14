@@ -130,7 +130,7 @@ def _extract_s3_request(question: str) -> dict[str, str] | None:
     if any(keyword in normalized for keyword in ("초음파", "영상")) or "ultrasound" in lowered:
         barcode = _extract_barcode(normalized)
         if not barcode:
-            raise ValueError("영상 조회는 바코드(11자리 숫자)가 필요해. 예: s3 영상 43032748143")
+            raise ValueError("영상 조회는 바코드(11자리 숫자)가 필요해. 예: s3 영상 12345678910")
         return {"kind": "ultrasound", "barcode": barcode}
 
     raise ValueError("지원 형식: s3 영상 <바코드> 또는 s3 로그 <장비명> <YYYY-MM-DD>")

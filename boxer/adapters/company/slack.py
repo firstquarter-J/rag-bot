@@ -117,6 +117,10 @@ from boxer.routers.company.s3_domain import (
     _query_s3_device_log,
     _query_s3_ultrasound_by_barcode,
 )
+from boxer.routers.company.usage_help import (
+    _build_usage_help_response,
+    _is_usage_help_request,
+)
 from boxer.routers.common.db import _query_db, _validate_readonly_sql
 from boxer.routers.common.notion import _is_notion_configured
 from boxer.routers.common.s3 import _build_s3_client
@@ -1097,6 +1101,7 @@ def create_app() -> App:
         thread_ts = payload["thread_ts"]
 
         if "ping" in text:
+            _set_request_log_route(payload, "ping")
             provider = (s.LLM_PROVIDER or "").lower().strip()
             if provider == "ollama":
                 health = _check_ollama_health()
@@ -1114,6 +1119,12 @@ def create_app() -> App:
 
             reply("🏓 pong\n• llm: 미설정")
             logger.info("Responded with ping health in thread_ts=%s provider=none", thread_ts)
+            return
+
+        if _is_usage_help_request(question):
+            _set_request_log_route(payload, "usage_help", route_mode="guide")
+            reply(_build_usage_help_response(), mention_user=False)
+            logger.info("Responded with usage help in thread_ts=%s", thread_ts)
             return
 
         def _is_claude_allowed_user(target_user_id: str | None) -> bool:
@@ -1250,6 +1261,17 @@ def create_app() -> App:
                 return True
 
             return False
+
+        def _attach_notion_playbooks_to_evidence(
+            evidence_payload: dict[str, Any] | None,
+        ) -> list[dict[str, Any]]:
+            if not isinstance(evidence_payload, dict):
+                return []
+
+            existing = evidence_payload.get("notionPlaybooks")
+            if isinstance(existing, list) and existing:
+                return [item for item in existing if isinstance(item, dict)]
+            return []
 
         def _reply_with_retrieval_synthesis(
             fallback_text: str,
@@ -2122,17 +2144,6 @@ def create_app() -> App:
         def _has_recordings_device_mapping(context: dict[str, Any]) -> bool:
             rows = context.get("rows") or []
             return any(row.get("deviceSeq") is not None for row in rows)
-
-        def _attach_notion_playbooks_to_evidence(
-            evidence_payload: dict[str, Any] | None,
-        ) -> list[dict[str, Any]]:
-            if not isinstance(evidence_payload, dict):
-                return []
-
-            existing = evidence_payload.get("notionPlaybooks")
-            if isinstance(existing, list) and existing:
-                return [item for item in existing if isinstance(item, dict)]
-            return []
 
         def _build_barcode_fallback_evidence() -> dict[str, Any] | None:
             if not barcode:
@@ -3169,7 +3180,7 @@ def create_app() -> App:
 
         if s.LLM_PROVIDER == "claude" and claude_client:
             if not question:
-                reply("질문 내용을 같이 보내줘")
+                reply("질문 내용을 같이 보내줘. 지원 기능이 궁금하면 `사용법`이라고 보내줘")
                 return
             if not _is_claude_allowed_user(user_id):
                 reply("Claude 질문은 현재 지정된 사용자만 사용할 수 있어")
@@ -3234,7 +3245,7 @@ def create_app() -> App:
 
         if s.LLM_PROVIDER == "ollama":
             if not question:
-                reply("질문 내용을 같이 보내줘")
+                reply("질문 내용을 같이 보내줘. 지원 기능이 궁금하면 `사용법`이라고 보내줘")
                 return
             try:
                 health = _check_ollama_health()
@@ -3309,7 +3320,7 @@ def create_app() -> App:
                 reply("Ollama 응답 중 오류가 발생했어. 서버 연결 상태를 확인해줘")
             return
 
-        reply("현재는 ping, s3 조회, db 조회 또는 LLM 질문에 응답해")
+        reply("지원 기능이 궁금하면 `사용법`이라고 보내줘", mention_user=False)
 
     def _handle_company_message(
         payload: Any,
