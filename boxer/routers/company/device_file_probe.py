@@ -216,17 +216,6 @@ def _should_render_compact_device_recovery_result(question: str) -> bool:
     return any(hint in text or hint in lowered for hint in _DEVICE_FILE_RECOVERY_HINTS)
 
 
-def _is_device_file_probe_allowed(user_id: str | None) -> bool:
-    allowed = cs.DEVICE_FILE_PROBE_ALLOWED_USER_IDS
-    if not allowed:
-        return True
-    return bool(user_id and user_id in allowed)
-
-
-def _build_device_file_probe_permission_message() -> str:
-    return "장비 파일 존재 확인은 허용된 사용자만 가능해"
-
-
 def _build_device_file_probe_config_message() -> str:
     return (
         "장비 파일 존재 확인 설정이 부족해. "

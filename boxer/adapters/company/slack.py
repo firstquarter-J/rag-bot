@@ -67,10 +67,8 @@ from boxer.routers.company.db_query import _extract_db_query, _format_db_query_r
 from boxer.routers.company.device_file_probe import (
     _build_device_file_download_config_message,
     _build_device_file_probe_config_message,
-    _build_device_file_probe_permission_message,
     _build_device_file_recovery_config_message,
     _build_device_file_scope_request_message,
-    _is_device_file_probe_allowed,
     _is_barcode_device_file_probe_request,
     _locate_barcode_file_candidates,
     _should_download_device_files,
@@ -2186,9 +2184,6 @@ def create_app() -> App:
             compact_file_list = _should_render_compact_device_file_list(question)
             compact_download = _should_render_compact_device_download_result(question)
             compact_recovery = _should_render_compact_device_recovery_result(question)
-            if probe_remote_files and not _is_device_file_probe_allowed(user_id):
-                reply(_build_device_file_probe_permission_message())
-                return
             if recover_remote_files and not cs.DEVICE_FILE_RECOVERY_ENABLED:
                 reply("장비 영상 복구 기능은 현재 비활성화돼 있어")
                 return

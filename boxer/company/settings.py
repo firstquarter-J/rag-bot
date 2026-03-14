@@ -86,20 +86,6 @@ BOX_UPLOADER_RECORDING_PATH = os.getenv(
 BOX_UPLOADER_TIMEOUT_SEC = int(os.getenv("BOX_UPLOADER_TIMEOUT_SEC", "120"))
 UPLOADER_JWT_SECRET = os.getenv("UPLOADER_JWT_SECRET", "").strip()
 
-_raw_device_file_probe_ids = os.getenv("DEVICE_FILE_PROBE_ALLOWED_USER_IDS", "")
-if _raw_device_file_probe_ids.strip():
-    DEVICE_FILE_PROBE_ALLOWED_USER_IDS = {
-        item.strip()
-        for item in _raw_device_file_probe_ids.split(",")
-        if item.strip()
-    }
-else:
-    DEVICE_FILE_PROBE_ALLOWED_USER_IDS = {
-        user_id
-        for user_id in (HYUN_USER_ID, MARK_USER_ID)
-        if user_id
-    }
-
 DEVICE_FILE_DOWNLOAD_BUCKET = (
     os.getenv("DEVICE_FILE_DOWNLOAD_BUCKET", "").strip()
     or core_settings.S3_ULTRASOUND_BUCKET
