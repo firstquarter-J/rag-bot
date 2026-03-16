@@ -34,7 +34,7 @@ def create_app() -> App:
 
         _set_request_log_route(payload, "sample_default")
         reply(
-            "샘플 어댑터가 동작 중이야. 회사용 기능은 ADAPTER_ENTRYPOINT를 company 어댑터로 바꿔서 사용해줘"
+            "샘플 어댑터가 동작 중이야. `ping`으로 확인하거나 custom adapter 예제를 시작점으로 붙이면 돼"
         )
 
     return create_slack_app(_handle_sample_mention)

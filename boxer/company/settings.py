@@ -2,10 +2,7 @@ import os
 import re
 from pathlib import Path
 
-from dotenv import load_dotenv
 from boxer.core import settings as core_settings
-
-load_dotenv()
 
 HYUN_USER_ID = os.getenv("HYUN_USER_ID", "").strip()
 MARK_USER_ID = os.getenv("MARK_USER_ID", "").strip()

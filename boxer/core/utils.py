@@ -17,7 +17,7 @@ def _validate_slack_tokens(missing: list[str]) -> None:
 def _validate_llm_tokens(missing: list[str]) -> None:
     if s.LLM_PROVIDER == "claude":
         if not s.ANTHROPIC_API_KEY or "REPLACE_ME" in s.ANTHROPIC_API_KEY:
-            missing.append("ANTHROPIC_API_KEY_HUMANSCAPE")
+            missing.append("ANTHROPIC_API_KEY")
         if not s.ANTHROPIC_MODEL or "REPLACE_ME" in s.ANTHROPIC_MODEL:
             missing.append("ANTHROPIC_MODEL")
 

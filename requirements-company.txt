@@ -1,0 +1,3 @@
+-r requirements-open-core.txt
+paramiko==3.5.1
+requests==2.32.3

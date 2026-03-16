@@ -4,9 +4,28 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_dotenv_path(raw_path: str) -> Path:
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    return candidate
+
+
+if not _env_flag("BOXER_SKIP_DOTENV"):
+    dotenv_path_raw = os.getenv("BOXER_DOTENV_PATH", "").strip()
+    dotenv_path = (
+        _resolve_dotenv_path(dotenv_path_raw)
+        if dotenv_path_raw
+        else PROJECT_ROOT / ".env"
+    )
+    load_dotenv(dotenv_path=dotenv_path, override=False)
 
 
 def _getenv_any(*names: str, default: str = "") -> str:
@@ -23,8 +42,7 @@ SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN", "")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "").lower()
-ANTHROPIC_API_KEY_HUMANSCAPE = os.getenv("ANTHROPIC_API_KEY_HUMANSCAPE", "")
-ANTHROPIC_API_KEY = ANTHROPIC_API_KEY_HUMANSCAPE
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 ANTHROPIC_TIMEOUT_SEC = int(os.getenv("ANTHROPIC_TIMEOUT_SEC", "60"))
 ANTHROPIC_MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS", "700"))
