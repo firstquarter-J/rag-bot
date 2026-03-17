@@ -104,6 +104,27 @@ def _format_install_flag_label(value: object) -> str:
     return "설치" if normalized == 1 else "미설치" if normalized == 0 else str(normalized)
 
 
+def _format_ssh_status_display(value: object) -> str:
+    text = _display_value(value, default="미확인")
+    if text == "연결 가능":
+        return ":large_blue_circle: *연결 가능*"
+    if text == "연결 불가":
+        return ":red_circle: *연결 불가*"
+    return f"`{text}`"
+
+
+def _format_capture_board_status_display(value: object) -> str:
+    text = _display_value(value, default="미확인")
+    normalized = text.strip().lower()
+    if normalized in {"connected", "online", "true", "1", "ok", "ready"}:
+        return ":large_blue_circle: *정상*"
+    if text == "미확인":
+        return f"`{text}`"
+    if normalized in {"disconnected", "offline", "false", "0", "fail", "failed", "error"}:
+        return f":red_circle: *비정상* (`{text}`)"
+    return f":red_circle: *{text}*"
+
+
 def _lookup_device_ssh_status(device_name: str) -> str:
     normalized_name = str(device_name or "").strip()
     if not normalized_name or not _is_mda_graphql_configured() or not cs.DEVICE_SSH_PASSWORD or paramiko is None:
@@ -192,11 +213,11 @@ def _build_device_detail_lines(
         f"{line_prefix}병실: `{_display_value(row.get('roomName'), default='미확인')}`",
     ]
     if ssh_status is not None:
-        lines.append(f"{line_prefix}SSH 연결 상태: `{_display_value(ssh_status, default='미확인')}`")
+        lines.append(f"{line_prefix}SSH 연결 상태: {_format_ssh_status_display(ssh_status)}")
     lines.extend(
         [
             f"{line_prefix}캡처보드 종류: `{_display_value(row.get('captureBoardType'), default='미확인')}`",
-            f"{line_prefix}캡처보드 연결 상태: `{_display_value(row.get('captureBoardStatus'), default='미확인')}`",
+            f"{line_prefix}캡처보드 연결 상태: {_format_capture_board_status_display(row.get('captureBoardStatus'))}",
             f"{line_prefix}status: `{_display_value(row.get('status'), default='미확인')}`",
             f"{line_prefix}활성 유무: `{_format_active_flag_label(row.get('activeFlag'))}`",
             f"{line_prefix}설치 유무: `{_format_install_flag_label(row.get('installFlag'))}`",
