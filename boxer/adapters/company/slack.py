@@ -273,6 +273,33 @@ _FREEFORM_ADVICE_HINTS = (
     "말까",
     "갈까",
 )
+_FREEFORM_META_LINE_PATTERNS = (
+    re.compile(r"(?mi)^\s*현재 요청 적용\s*:\s*.+$"),
+    re.compile(r"(?mi)^\s*(?:팀원별 컨텍스트|현재 화자 스타일|언급된 대상 반응 가이드)\s*:\s*$"),
+)
+_FREEFORM_META_PREFIX_REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"^\s*(?:캐릭터|대화|채팅)\s*로그\s*기준(?:으로)?\s*(?:해석하면|보면)\s*[,:\-]?\s*",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:채팅\s*밈|오늘\s*로그|캐릭터상(?:으로)?)\s*기준(?:으로)?\s*(?:해석하면|보면)\s*[,:\-]?\s*",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"\bfictional framing\b",
+            re.IGNORECASE,
+        ),
+        "밈 프레임",
+    ),
+)
 
 
 def _rewrite_phase2_scope_request_message(
@@ -443,14 +470,29 @@ def _build_freeform_response_rules(question: str, thread_context: str = "") -> s
     base_rules = (cs.FREEFORM_RESPONSE_RULES_PROMPT or "").strip()
     mode = _classify_freeform_response_mode(question, thread_context)
     mode_line = {
-        "comparison": '- 현재 요청 적용: 비교/상성형으로 보고 "결론 -> 이유 2~3개 -> 변수/예외 1개" 순서로 답해.',
-        "playful": "- 현재 요청 적용: 가벼운 드립형으로 보고 1~3문장 안에서 임팩트 있게 답해. 마지막 한 줄만 세게 쳐.",
-        "advice": '- 현재 요청 적용: 조언/판단형으로 보고 "결론 -> 옵션/다음 액션 -> 이유" 순서로 답해.',
-        "analysis": '- 현재 요청 적용: 해석/분석형으로 보고 "결론 -> 구조적 근거 -> 리스크/예외" 순서로 답해.',
+        "comparison": '- 비교/상성 질문이면 "결론 -> 이유 2~3개 -> 변수/예외 1개" 순서로 바로 답해.',
+        "playful": "- 가벼운 드립 질문이면 1~3문장 안에서 임팩트 있게 답해. 마지막 한 줄만 세게 쳐.",
+        "advice": '- 조언/판단 질문이면 "결론 -> 옵션/다음 액션 -> 이유" 순서로 답해.',
+        "analysis": '- 해석/분석 질문이면 "결론 -> 구조적 근거 -> 리스크/예외" 순서로 답해.',
     }[mode]
     if base_rules:
         return f"{base_rules}\n{mode_line}"
     return mode_line
+
+
+def _sanitize_freeform_reply(text: str) -> str:
+    normalized = (text or "").strip()
+    if not normalized:
+        return ""
+
+    cleaned = normalized
+    for pattern in _FREEFORM_META_LINE_PATTERNS:
+        cleaned = pattern.sub("", cleaned)
+    for pattern, replacement in _FREEFORM_META_PREFIX_REWRITES:
+        cleaned = pattern.sub(replacement, cleaned)
+
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned or normalized
 
 
 def _get_freeform_system_prompt(
@@ -3332,6 +3374,7 @@ def create_app() -> App:
                         speaker_user_id=user_id,
                     ),
                 )
+                answer = _sanitize_freeform_reply(answer)
                 if not answer:
                     answer = "답변을 생성하지 못했어. 다시 질문해줘"
                 reply(answer)
@@ -3413,6 +3456,7 @@ def create_app() -> App:
                     ),
                     think=False,
                 )
+                answer = _sanitize_freeform_reply(answer)
                 if not answer:
                     answer = "답변을 생성하지 못했어. 다시 질문해줘"
                 reply(answer)
