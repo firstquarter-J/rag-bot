@@ -3,6 +3,7 @@ import re
 import time
 from urllib import error, request
 
+import anthropic
 from anthropic import Anthropic
 
 from boxer.core import settings as s
@@ -94,6 +95,82 @@ def _ask_claude_with_meta(
     return {
         "text": "".join(text_blocks).strip(),
         "stop_reason": str(getattr(result, "stop_reason", "") or "").strip(),
+    }
+
+
+def _check_claude_health(
+    client: Anthropic | None = None,
+    *,
+    timeout_sec: int | None = None,
+    model: str | None = None,
+) -> dict[str, str | bool]:
+    actual_timeout = max(
+        1,
+        timeout_sec if timeout_sec is not None else min(5, s.ANTHROPIC_TIMEOUT_SEC),
+    )
+    started_at = time.monotonic()
+    configured_model = (model or s.ANTHROPIC_MODEL or "").strip()
+    health_client = client or Anthropic(
+        api_key=s.ANTHROPIC_API_KEY,
+        timeout=actual_timeout,
+    )
+
+    try:
+        health_client.messages.create(
+            model=configured_model,
+            max_tokens=1,
+            messages=[{"role": "user", "content": "ping"}],
+        )
+    except anthropic.APITimeoutError:
+        return {
+            "ok": False,
+            "summary": f"응답 없음 ({actual_timeout}초 초과)",
+        }
+    except anthropic.AuthenticationError:
+        return {
+            "ok": False,
+            "summary": "인증 실패",
+        }
+    except anthropic.PermissionDeniedError:
+        return {
+            "ok": False,
+            "summary": "권한 없음",
+        }
+    except anthropic.RateLimitError:
+        return {
+            "ok": False,
+            "summary": "호출 제한",
+        }
+    except anthropic.APIConnectionError as exc:
+        return {
+            "ok": False,
+            "summary": f"연결 실패 ({str(exc) or 'connection failed'})",
+        }
+    except anthropic.BadRequestError as exc:
+        return {
+            "ok": False,
+            "summary": f"요청 실패 ({exc.status_code})",
+        }
+    except anthropic.APIStatusError as exc:
+        return {
+            "ok": False,
+            "summary": f"HTTP {exc.status_code}",
+        }
+    except anthropic.AnthropicError as exc:
+        return {
+            "ok": False,
+            "summary": f"응답 오류 ({type(exc).__name__})",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "summary": f"응답 오류 ({type(exc).__name__})",
+        }
+
+    latency_ms = int((time.monotonic() - started_at) * 1000)
+    return {
+        "ok": True,
+        "summary": f"정상 ({latency_ms}ms)",
     }
 
 

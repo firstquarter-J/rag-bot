@@ -30,7 +30,7 @@ from boxer.company.retrieval_rules import (
 from boxer.company import settings as cs
 from boxer.company.utils import _extract_barcode
 from boxer.core import settings as s
-from boxer.core.llm import _ask_claude, _ask_ollama_chat, _check_ollama_health
+from boxer.core.llm import _ask_claude, _ask_ollama_chat, _check_claude_health, _check_ollama_health
 from boxer.core.retrieval_synthesis import _synthesize_retrieval_answer
 from boxer.core.thread_context import _build_model_input, _load_thread_context
 from boxer.core.utils import _validate_tokens
@@ -934,6 +934,37 @@ def _split_barcode_log_reply(reply_text: str, max_chars: int = 3000) -> list[str
     return chunks
 
 
+def _format_ping_llm_status(ok: bool | None) -> str:
+    if ok is None:
+        return "미설정"
+    return "가능" if ok else "불가"
+
+
+def _build_dependency_failure_reply(action_label: str, exc: Exception) -> str:
+    base = f"{action_label} 중 오류가 발생했어."
+
+    if isinstance(exc, pymysql.MySQLError):
+        return f"{base} DB 연결 또는 조회에 실패했어"
+
+    if isinstance(exc, ClientError):
+        code = str(exc.response.get("Error", {}).get("Code", "")).strip()
+        if code in {"403", "AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch"}:
+            return f"{base} S3 접근 권한을 확인해줘"
+        return f"{base} S3 로그 접근에 실패했어"
+
+    if isinstance(exc, BotoCoreError):
+        return f"{base} S3 로그 접근에 실패했어"
+
+    if isinstance(exc, RuntimeError):
+        lowered = str(exc).lower()
+        if any(token in lowered for token in ("db", "mysql", "read-only")):
+            return f"{base} DB 연결 또는 조회에 실패했어"
+        if any(token in lowered for token in ("s3", "bucket", "credential")):
+            return f"{base} S3 로그 접근에 실패했어"
+
+    return f"{base} 잠시 후 다시 시도해줘"
+
+
 def _extract_user_only_thread_text(thread_context: str, target_user_id: str) -> str:
     prefix = f"{(target_user_id or '').strip()}: "
     if not prefix.strip():
@@ -1233,7 +1264,7 @@ def create_app() -> App:
             provider = (s.LLM_PROVIDER or "").lower().strip()
             if provider == "ollama":
                 health = _check_ollama_health()
-                reply(f"🏓 pong\n• llm: {health['summary']}")
+                reply(f"🏓 pong\n• llm: {_format_ping_llm_status(bool(health['ok']))}")
                 logger.info(
                     "Responded with ping health in thread_ts=%s provider=ollama ok=%s",
                     thread_ts,
@@ -1241,11 +1272,17 @@ def create_app() -> App:
                 )
                 return
             if provider == "claude":
-                reply("🏓 pong\n• llm: claude api 사용 중")
-                logger.info("Responded with ping health in thread_ts=%s provider=claude", thread_ts)
+                health = _check_claude_health()
+                reply(f"🏓 pong\n• llm: {_format_ping_llm_status(bool(health['ok']))}")
+                logger.info(
+                    "Responded with ping health in thread_ts=%s provider=claude ok=%s summary=%s",
+                    thread_ts,
+                    health["ok"],
+                    health["summary"],
+                )
                 return
 
-            reply("🏓 pong\n• llm: 미설정")
+            reply(f"🏓 pong\n• llm: {_format_ping_llm_status(None)}")
             logger.info("Responded with ping health in thread_ts=%s provider=none", thread_ts)
             return
 
@@ -2594,9 +2631,9 @@ def create_app() -> App:
                 )
             except ValueError as exc:
                 reply(f"녹화 실패 원인 분석 요청 형식 오류: {exc}")
-            except (BotoCoreError, ClientError, pymysql.MySQLError, RuntimeError):
+            except (BotoCoreError, ClientError, pymysql.MySQLError, RuntimeError) as exc:
                 logger.exception("Recording failure analysis failed")
-                reply("녹화 실패 원인 분석 중 오류가 발생했어. DB 연결/S3 권한/로그 경로를 확인해줘")
+                reply(_build_dependency_failure_reply("녹화 실패 원인 분석", exc))
             except Exception:
                 logger.exception("Recording failure analysis failed")
                 reply("녹화 실패 원인 분석 중 오류가 발생했어. 잠시 후 다시 시도해줘")
@@ -2729,9 +2766,9 @@ def create_app() -> App:
                 _reply_with_barcode_log_error_summary(log_analysis_payload)
             except ValueError as exc:
                 reply(f"로그 분석 요청 형식 오류: {exc}")
-            except (BotoCoreError, ClientError, pymysql.MySQLError, RuntimeError):
+            except (BotoCoreError, ClientError, pymysql.MySQLError, RuntimeError) as exc:
                 logger.exception("Barcode log analysis failed")
-                reply("바코드 로그 분석 중 오류가 발생했어. DB 연결/S3 권한/로그 경로를 확인해줘")
+                reply(_build_dependency_failure_reply("바코드 로그 분석", exc))
             except Exception:
                 logger.exception("Barcode log analysis failed")
                 reply("바코드 로그 분석 중 오류가 발생했어. 잠시 후 다시 시도해줘")
