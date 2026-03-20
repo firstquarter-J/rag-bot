@@ -12,14 +12,14 @@ fi
 export SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-xoxb-sample-token}"
 export SLACK_APP_TOKEN="${SLACK_APP_TOKEN:-xapp-sample-token}"
 export SLACK_SIGNING_SECRET="${SLACK_SIGNING_SECRET:-sample-signing-secret}"
-export ADAPTER_ENTRYPOINT="${ADAPTER_ENTRYPOINT:-boxer.adapters.sample.slack:create_app}"
+export ADAPTER_ENTRYPOINT="${ADAPTER_ENTRYPOINT:-boxer_adapter_slack.sample:create_app}"
 export BOXER_SKIP_DOTENV="${BOXER_SKIP_DOTENV:-true}"
 export REQUEST_LOG_SQLITE_ENABLED="${REQUEST_LOG_SQLITE_ENABLED:-false}"
 export REQUEST_LOG_SQLITE_S3_RESTORE_ON_STARTUP="${REQUEST_LOG_SQLITE_S3_RESTORE_ON_STARTUP:-false}"
 export REQUEST_LOG_SQLITE_S3_BACKUP_ENABLED="${REQUEST_LOG_SQLITE_S3_BACKUP_ENABLED:-false}"
 
 if ! "${PYTHON_BIN}" -c "import slack_bolt" >/dev/null 2>&1; then
-  echo "[fail] slack_bolt import 불가. .venv 생성 후 pip install -e . 또는 requirements-open-core 설치가 필요해" >&2
+  echo "[fail] slack_bolt import 불가. .venv 생성 후 pip install -e \".[slack]\" 또는 requirements-slack 설치가 필요해" >&2
   exit 1
 fi
 
@@ -33,7 +33,7 @@ WebClient.auth_test = lambda self, **kwargs: {  # type: ignore[method-assign]
     "bot_id": "B_SAMPLE",
 }
 
-from boxer.adapters.factory import create_app
+from boxer_adapter_slack.factory import create_app
 
 app = create_app()
 print(type(app).__name__)

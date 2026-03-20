@@ -3,7 +3,7 @@ from typing import Any
 
 from slack_bolt import App
 
-from boxer.adapters.common.slack import (
+from boxer_adapter_slack.common import (
     MentionPayload,
     SlackReplyFn,
     _set_request_log_route,

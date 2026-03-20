@@ -1,0 +1,2 @@
+-r requirements-open-core.txt
+slack-bolt==1.26.0

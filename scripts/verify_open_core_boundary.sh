@@ -21,17 +21,17 @@ check_absent() {
 check_absent \
   "company keywords absent from reusable core/sample/example code" \
   "마미박스|베이비매직|barcode_log_error_summary|recording_failure_analysis" \
-  boxer/core boxer/routers/common boxer/adapters/common boxer/adapters/sample examples
+  boxer/core boxer/routers/common boxer_adapter_slack/common.py boxer_adapter_slack/sample.py examples
 
 check_absent \
   "company imports absent from reusable core/sample/example code" \
   "boxer\\.company|adapters\\.company|routers\\.company" \
-  boxer/core boxer/routers/common boxer/adapters/common boxer/adapters/sample examples
+  boxer/core boxer/routers/common boxer_adapter_slack/common.py boxer_adapter_slack/sample.py examples
 
 check_absent \
   "sample/example messaging stays domain-neutral" \
   "회사용 기능|company 어댑터" \
-  boxer/adapters/sample examples
+  boxer_adapter_slack/sample.py examples
 
 check_absent \
   "company-only scripts absent from public scripts" \
@@ -49,6 +49,6 @@ check_absent \
   boxer/core boxer/routers/common
 
 echo "[check] compileall"
-"${PYTHON_BIN}" -m compileall boxer >/dev/null
+"${PYTHON_BIN}" -m compileall boxer boxer_adapter_slack >/dev/null
 
 echo "[ok] open core boundary verified"

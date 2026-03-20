@@ -8,14 +8,14 @@ from anthropic import Anthropic
 from botocore.exceptions import BotoCoreError, ClientError
 from slack_bolt import App
 
-from boxer.adapters.common.slack import (
+from boxer_adapter_slack.common import (
     MentionPayload,
     SlackReplyFn,
     _merge_request_log_metadata,
     _set_request_log_route,
     create_slack_app,
 )
-from boxer.adapters.company.fun import handle_fun_message
+from boxer_adapter_slack.fun import handle_fun_message
 from boxer.company.prompt_security import (
     build_prompt_security_refusal,
     is_prompt_exfiltration_attempt,

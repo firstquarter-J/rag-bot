@@ -5,15 +5,6 @@ from typing import Any
 from boxer.core import settings as s
 
 
-def _validate_slack_tokens(missing: list[str]) -> None:
-    if not s.SLACK_BOT_TOKEN or "REPLACE_ME" in s.SLACK_BOT_TOKEN:
-        missing.append("SLACK_BOT_TOKEN")
-    if not s.SLACK_APP_TOKEN or "REPLACE_ME" in s.SLACK_APP_TOKEN:
-        missing.append("SLACK_APP_TOKEN")
-    if not s.SLACK_SIGNING_SECRET or "REPLACE_ME" in s.SLACK_SIGNING_SECRET:
-        missing.append("SLACK_SIGNING_SECRET")
-
-
 def _validate_llm_tokens(missing: list[str]) -> None:
     if s.LLM_PROVIDER == "claude":
         if not s.ANTHROPIC_API_KEY or "REPLACE_ME" in s.ANTHROPIC_API_KEY:
@@ -52,7 +43,6 @@ def _validate_data_source_tokens(missing: list[str]) -> None:
 
 def _validate_tokens(*, include_llm: bool = True, include_data_sources: bool = True) -> None:
     missing: list[str] = []
-    _validate_slack_tokens(missing)
     if include_llm:
         _validate_llm_tokens(missing)
     if include_data_sources:

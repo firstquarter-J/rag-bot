@@ -35,12 +35,6 @@ def _getenv_any(*names: str, default: str = "") -> str:
             return value
     return default
 
-# Phase 1 로컬 실행은 .env 기준
-# 운영 환경에서는 Secrets Manager 연동 예정
-SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
-SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN", "")
-SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
-
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "").lower()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
@@ -221,5 +215,3 @@ DB_LOCKING_READ_PATTERN = re.compile(
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant. Reply briefly, do not guess, and ask one clarifying question when needed."
 )
-
-ADAPTER_ENTRYPOINT = os.getenv("ADAPTER_ENTRYPOINT", "boxer.adapters.sample.slack:create_app")

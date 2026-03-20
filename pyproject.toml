@@ -9,7 +9,7 @@ description = "Open-core retrieval-grounded assistant bot framework with domain-
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
-keywords = ["llm", "retrieval", "slack", "assistant", "rga"]
+keywords = ["llm", "retrieval", "assistant", "rga", "rag"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -21,7 +21,6 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-  "slack-bolt==1.26.0",
   "python-dotenv==1.1.1",
   "anthropic==0.74.1",
   "pymysql==1.1.1",
@@ -29,7 +28,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+slack = [
+  "slack-bolt==1.26.0",
+]
 company = [
+  "slack-bolt==1.26.0",
   "paramiko==3.5.1",
   "requests==2.32.3",
 ]
@@ -38,10 +41,7 @@ company = [
 Repository = "https://github.com/firstquarter-J/boxer"
 
 [project.scripts]
-boxer = "app:main"
-
-[tool.setuptools]
-py-modules = ["app"]
+boxer-slack = "boxer_adapter_slack.runtime:main"
 
 [tool.setuptools.packages.find]
-include = ["boxer*"]
+include = ["boxer*", "boxer_adapter_slack*"]

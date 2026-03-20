@@ -4,7 +4,7 @@ from typing import Any
 
 from anthropic import Anthropic
 
-from boxer.adapters.common.slack import (
+from boxer_adapter_slack.common import (
     MessagePayload,
     SlackMessageReplyFn,
     _set_request_log_skip_persist,

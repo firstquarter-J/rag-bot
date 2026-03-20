@@ -6,6 +6,7 @@ from slack_bolt import App
 
 from boxer.core import settings as s
 from boxer.core.utils import _extract_question, _format_reply_text, _validate_tokens
+from boxer_adapter_slack import settings as ss
 from boxer.routers.common.request_log import (
     _initialize_request_log_storage,
     _save_request_log_record,
@@ -356,6 +357,7 @@ def create_slack_app(
     mention_handler: MentionHandler,
     message_handler: MessageHandler | None = None,
 ) -> App:
+    ss.validate_slack_tokens()
     _validate_tokens(include_llm=False, include_data_sources=False)
     logger = logging.getLogger(__name__)
     if s.REQUEST_LOG_SQLITE_ENABLED and s.REQUEST_LOG_SQLITE_INIT_ON_STARTUP:
@@ -364,7 +366,7 @@ def create_slack_app(
             logger.info("Initialized request log storage: %s", init_result)
         except Exception:
             logger.warning("Failed to initialize request log storage", exc_info=True)
-    app = App(token=s.SLACK_BOT_TOKEN, signing_secret=s.SLACK_SIGNING_SECRET)
+    app = App(token=ss.SLACK_BOT_TOKEN, signing_secret=ss.SLACK_SIGNING_SECRET)
 
     @app.event("app_mention")
     def handle_app_mention(event: dict[str, Any], say, client) -> None:
