@@ -1,6 +1,9 @@
 import unittest
 
-from boxer_company_adapter_slack.company import _looks_like_notion_doc_followup
+from boxer_company_adapter_slack.company import (
+    _looks_like_notion_doc_followup,
+    _looks_like_notion_doc_question,
+)
 
 
 _NOTION_THREAD_CONTEXT = """*문서 기반 답변*
@@ -12,6 +15,11 @@ _NOTION_THREAD_CONTEXT = """*문서 기반 답변*
 
 
 class NotionFollowupRoutingTests(unittest.TestCase):
+    def test_thread_answer_instruction_is_not_treated_as_notion_question(self) -> None:
+        self.assertFalse(
+            _looks_like_notion_doc_question("마미박스 2.11.300 버전 참고해서 Zion 의 직전 질문에 대답해봐")
+        )
+
     def test_small_talk_is_not_treated_as_notion_followup(self) -> None:
         self.assertFalse(_looks_like_notion_doc_followup("안녕?", _NOTION_THREAD_CONTEXT))
         self.assertFalse(_looks_like_notion_doc_followup("넌 누구?", _NOTION_THREAD_CONTEXT))
@@ -25,6 +33,14 @@ class NotionFollowupRoutingTests(unittest.TestCase):
     def test_operational_followup_still_routes_to_notion(self) -> None:
         self.assertTrue(_looks_like_notion_doc_followup("그럼 왜 그래?", _NOTION_THREAD_CONTEXT))
         self.assertTrue(_looks_like_notion_doc_followup("재부팅해야 돼?", _NOTION_THREAD_CONTEXT))
+
+    def test_thread_answer_instruction_is_not_treated_as_notion_followup(self) -> None:
+        self.assertFalse(
+            _looks_like_notion_doc_followup(
+                "마미박스 2.11.300 버전 참고해서 Zion 의 직전 질문에 대답해봐",
+                _NOTION_THREAD_CONTEXT,
+            )
+        )
 
 
 if __name__ == "__main__":

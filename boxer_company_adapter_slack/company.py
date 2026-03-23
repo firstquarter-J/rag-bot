@@ -232,6 +232,36 @@ _NOTION_DOC_OPERATION_FOLLOWUP_TOKENS = (
     "맞나요",
     "어디",
 )
+_FREEFORM_THREAD_REFERENCE_TOKENS = (
+    "직전 질문",
+    "이전 질문",
+    "방금 질문",
+    "위 질문",
+    "이전 대화",
+    "직전 대화",
+    "위 대화",
+    "방금 대화",
+    "앞 질문",
+)
+_FREEFORM_ANSWER_INSTRUCTION_TOKENS = (
+    "답해봐",
+    "대답해봐",
+    "답해 줘",
+    "답해줘",
+    "대답해 줘",
+    "대답해줘",
+    "말해봐",
+    "정리해봐",
+    "정리해 줘",
+    "정리해줘",
+)
+_FREEFORM_REFERENCE_INSTRUCTION_TOKENS = (
+    "참고해서",
+    "참고해",
+    "기준으로",
+    "기준 삼아",
+    "기반으로",
+)
 _FREEFORM_SMALL_TALK_TOKENS = (
     "안녕",
     "반가",
@@ -478,6 +508,8 @@ def _looks_like_notion_doc_question(question: str) -> bool:
     text = (question or "").strip()
     if not text:
         return False
+    if _looks_like_thread_answer_instruction(text):
+        return False
     return any(token in text for token in _NOTION_DOC_QUERY_TOKENS)
 
 
@@ -521,6 +553,20 @@ def _looks_like_team_freeform_question(question: str) -> bool:
     return False
 
 
+def _looks_like_thread_answer_instruction(question: str) -> bool:
+    text = (question or "").strip()
+    if not text:
+        return False
+
+    has_thread_reference = any(token in text for token in _FREEFORM_THREAD_REFERENCE_TOKENS)
+    if not has_thread_reference:
+        return False
+
+    has_answer_instruction = any(token in text for token in _FREEFORM_ANSWER_INSTRUCTION_TOKENS)
+    has_reference_instruction = any(token in text for token in _FREEFORM_REFERENCE_INSTRUCTION_TOKENS)
+    return has_answer_instruction or has_reference_instruction
+
+
 def _looks_like_notion_doc_followup(question: str, thread_context: str) -> bool:
     text = (question or "").strip()
     if not text or not _thread_has_notion_doc_context(thread_context):
@@ -528,6 +574,8 @@ def _looks_like_notion_doc_followup(question: str, thread_context: str) -> bool:
     if _looks_like_small_talk_question(text):
         return False
     if _looks_like_team_freeform_question(text):
+        return False
+    if _looks_like_thread_answer_instruction(text):
         return False
 
     lowered = text.lower()
