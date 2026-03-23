@@ -9,12 +9,12 @@ from boxer_adapter_slack.common import (
     SlackMessageReplyFn,
     _set_request_log_skip_persist,
 )
-from boxer.company import settings as cs
-from boxer.company.prompt_security import (
+from boxer_company import settings as cs
+from boxer_company.prompt_security import (
     build_prompt_security_refusal,
     is_prompt_exfiltration_attempt,
 )
-from boxer.company.team_chat_context import build_team_chat_context
+from boxer_company.team_chat_context import build_team_chat_context
 from boxer.core import settings as s
 from boxer.core.llm import _ask_claude, _ask_ollama_chat, _check_ollama_health
 from boxer.core.thread_context import _load_thread_context

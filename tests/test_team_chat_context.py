@@ -1,6 +1,6 @@
 import unittest
 
-from boxer.company import team_chat_context as tcc
+from boxer_company import team_chat_context as tcc
 
 
 class TeamChatContextTests(unittest.TestCase):

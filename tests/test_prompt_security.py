@@ -1,6 +1,6 @@
 import unittest
 
-from boxer.company.prompt_security import (
+from boxer_company.prompt_security import (
     build_prompt_security_refusal,
     is_prompt_exfiltration_attempt,
     looks_like_prompt_exfiltration_question,

@@ -43,6 +43,7 @@ Boxer는 오픈소스로 재사용 가능한 `Retrieval-Grounded Assistant (RGA)
 
 - `boxer/`: 채널 중립 RAG core
 - `boxer_adapter_slack/`: 공개용 Slack 채널 adapter
+- `boxer_company/`: 회사 도메인 패키지
 - `boxer_company_adapter_slack/`: 회사 전용 Slack adapter 조립부
 - `boxer_adapter_web/`: 웹 API / BFF adapter 자리
 - `widget/`: 브라우저 채팅 UI 자리
@@ -75,8 +76,7 @@ Boxer는 오픈소스로 재사용 가능한 `Retrieval-Grounded Assistant (RGA)
 
 ### Domain-Specific Logic
 
-- `boxer/company`
-- `boxer/routers/company`
+- `boxer_company`
 - `boxer_company_adapter_slack`
 
 도메인 규칙, 권한 정책, prompt, 구체적인 라우터와 connector 조합을 둔다.
@@ -132,6 +132,7 @@ Slack / Web Widget / Other Channel
 boxer/
   boxer/
   boxer_adapter_slack/
+  boxer_company/
   boxer_company_adapter_slack/
   boxer_adapter_web/
   widget/
@@ -143,6 +144,7 @@ boxer/
 
 - `boxer/`: 채널 중립 RAG core
 - `boxer_adapter_slack/`: 공개용 Slack 런타임과 Slack reference adapter
+- `boxer_company/`: 회사 도메인 패키지
 - `boxer_company_adapter_slack/`: 회사 전용 Slack adapter 조립부
 - `boxer_adapter_web/`: 위젯이나 웹 클라이언트가 붙는 API / BFF
 - `widget/`: 브라우저 채팅 UI

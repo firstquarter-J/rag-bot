@@ -16,26 +16,26 @@ from boxer_adapter_slack.common import (
     create_slack_app,
 )
 from boxer_company_adapter_slack.fun import handle_fun_message
-from boxer.company.prompt_security import (
+from boxer_company.prompt_security import (
     build_prompt_security_refusal,
     is_prompt_exfiltration_attempt,
 )
-from boxer.company.team_chat_context import TEAM_MEMBER_PROFILES, build_team_freeform_context
-from boxer.company.notion_links import select_company_notion_doc_links
-from boxer.company.notion_playbooks import _select_notion_references
-from boxer.company.retrieval_rules import (
+from boxer_company.team_chat_context import TEAM_MEMBER_PROFILES, build_team_freeform_context
+from boxer_company.notion_links import select_company_notion_doc_links
+from boxer_company.notion_playbooks import _select_notion_references
+from boxer_company.retrieval_rules import (
     _build_company_retrieval_rules,
     _transform_company_retrieval_payload,
 )
-from boxer.company import settings as cs
-from boxer.company.utils import _extract_barcode
+from boxer_company import settings as cs
+from boxer_company.utils import _extract_barcode
 from boxer.core import settings as s
 from boxer.core.llm import _ask_claude, _ask_ollama_chat, _check_claude_health, _check_ollama_health
 from boxer.core.retrieval_synthesis import _synthesize_retrieval_answer
 from boxer.core.thread_context import _build_model_input, _load_thread_context
 from boxer.core.utils import _validate_tokens
-from boxer.routers.company.app_user import _lookup_app_user_by_barcode, _should_lookup_barcode
-from boxer.routers.company.barcode_log import (
+from boxer_company.routers.app_user import _lookup_app_user_by_barcode, _should_lookup_barcode
+from boxer_company.routers.barcode_log import (
     _analyze_barcode_log_phase1_window,
     _analyze_barcode_log_errors,
     _analyze_barcode_log_scan_events,
@@ -68,8 +68,8 @@ from boxer.routers.company.barcode_log import (
     _is_scan_focused_request,
     _is_ultrasound_capture_filter_query_request,
 )
-from boxer.routers.company.db_query import _extract_db_query, _format_db_query_result
-from boxer.routers.company.device_file_probe import (
+from boxer_company.routers.db_query import _extract_db_query, _format_db_query_result
+from boxer_company.routers.device_file_probe import (
     _build_device_file_download_config_message,
     _build_device_file_probe_config_message,
     _build_device_file_recovery_config_message,
@@ -84,12 +84,12 @@ from boxer.routers.company.device_file_probe import (
     _should_render_compact_device_file_list,
     _should_render_compact_device_recovery_result,
 )
-from boxer.routers.company.mda_graphql import _create_mda_activity_log
-from boxer.routers.company.request_log_query import (
+from boxer_company.routers.mda_graphql import _create_mda_activity_log
+from boxer_company.routers.request_log_query import (
     _extract_request_log_query,
     _query_request_log_text,
 )
-from boxer.routers.company.recording_failure_analysis import (
+from boxer_company.routers.recording_failure_analysis import (
     _build_cause_line,
     _build_recording_failure_analysis_evidence,
     _classify_record,
@@ -99,7 +99,7 @@ from boxer.routers.company.recording_failure_analysis import (
     _narrow_recording_failure_analysis_evidence,
     _render_recording_failure_analysis_fallback,
 )
-from boxer.routers.company.box_db import (
+from boxer_company.routers.box_db import (
     _load_recordings_context_by_barcode,
     _lookup_device_contexts_by_hospital_room,
     _query_devices_by_filters,
@@ -117,12 +117,12 @@ from boxer.routers.company.box_db import (
     _query_recordings_on_date_by_barcode,
     _query_ultrasound_captures_by_filters,
 )
-from boxer.routers.company.s3_domain import (
+from boxer_company.routers.s3_domain import (
     _extract_s3_request,
     _query_s3_device_log,
     _query_s3_ultrasound_by_barcode,
 )
-from boxer.routers.company.usage_help import (
+from boxer_company.routers.usage_help import (
     _build_usage_help_response,
     _is_usage_help_request,
 )

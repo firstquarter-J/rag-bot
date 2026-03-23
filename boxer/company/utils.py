@@ -1,8 +1,3 @@
-from boxer.company import settings as cs
+from boxer._module_compat import _reexport_module
 
-
-def _extract_barcode(text: str) -> str | None:
-    match = cs.BARCODE_PATTERN.search(text)
-    if not match:
-        return None
-    return match.group(1)
+_reexport_module("boxer_company.utils", globals())
